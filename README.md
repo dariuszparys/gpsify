@@ -6,7 +6,7 @@ This repository is a macOS-first, local-first CLI plus a localhost review UI. Th
 
 ## Status
 
-**PR 3 — folder ingest, batched EXIF read, clustering.** `gpsify ingest` walks a folder, classifies JPEG/HEIC/PNG/RAW, hashes files, reads EXIF in `exiftool` chunks of 200 (Pillow/Piexif JPEG fallback), and writes the job store. Resume is by canonical root + `--recursive` via the global index. Re-ingest applies sha256-reset / `missing` rules. `--relocate JOB_ID` rebinds a moved folder by hash. Photos.app `*.photoslibrary` bundles are refused (exit 2). Clusters are time+folder (45-minute dated gap; one undated bucket per directory; mtime is not capture time). HEIC decode and RAW preview extract wait for PR 4. Propose/review/apply remain stubs.
+**PR 4 — lazy previews, HEIC decode, RAW preview extract.** `gpsify ingest` still does not write `previews/` or `thumbs/`. `gpsify.media` builds orientation-corrected JPEG previews (long edge 1280, quality 85) and thumbs (256) on demand. HEIC uses the `heic` extra (`pillow-heif`) and decodes the primary still only; without the extra, preview fails as `skipped_unsupported` with an install hint. RAW never uploads the container: `exiftool -b` tries JpgFromRaw / PreviewImage / OtherImage / ThumbnailImage and requires a long edge ≥ 256 px, else `skipped_no_preview`. Propose/review/apply remain stubs; GPS is never written.
 
 GPS is never written in this slice. There is no network I/O from the app yet.
 
@@ -20,9 +20,11 @@ GPS is never written in this slice. There is no network I/O from the app yet.
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[dev]"
+python -m pip install -e ".[dev,heic]"
 gpsify --help
 ```
+
+`heic` is optional. Without it, JPEG/PNG/RAW still work; HEIC preview is `skipped_unsupported`. RAW preview extract needs `exiftool`.
 
 With [uv](https://docs.astral.sh/uv/):
 
@@ -97,9 +99,11 @@ gpsify apply <job_id>
 Locally:
 
 ```bash
-python -m pip install -e ".[dev]"
+python -m pip install -e ".[dev,heic]"
 python -m pytest --disable-socket --allow-unix-socket -q
 ```
+
+HEIC and live RAW-extract tests skip when `pillow-heif` / `exiftool` are missing.
 
 ## License
 

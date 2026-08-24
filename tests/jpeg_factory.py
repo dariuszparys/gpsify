@@ -29,6 +29,7 @@ def write_test_jpeg(
     model: str = "EOS 6D",
     size: tuple[int, int] = (8, 8),
     color: tuple[int, int, int] = (30, 80, 140),
+    orientation: int | None = None,
 ) -> Path:
     """Write a tiny JPEG. ``gps`` is signed decimal (lat, lng)."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -38,6 +39,8 @@ def write_test_jpeg(
         piexif.ImageIFD.Model: model,
         piexif.ImageIFD.Software: "gpsify-test",
     }
+    if orientation is not None:
+        zeroth[piexif.ImageIFD.Orientation] = orientation
     exif_ifd: dict[int, object] = {}
     gps_ifd: dict[int, object] = {}
     if datetime_original is not None:
