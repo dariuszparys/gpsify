@@ -6,9 +6,7 @@ This repository is a macOS-first, local-first CLI plus a localhost review UI. Th
 
 ## Status
 
-**PR 4 — lazy previews, HEIC decode, RAW preview extract.** `gpsify ingest` still does not write `previews/` or `thumbs/`. `gpsify.media` builds orientation-corrected JPEG previews (long edge 1280, quality 85) and thumbs (256) on demand. HEIC uses the `heic` extra (`pillow-heif`) and decodes the primary still only; without the extra, preview fails as `skipped_unsupported` with an install hint. RAW never uploads the container: `exiftool -b` tries JpgFromRaw / PreviewImage / OtherImage / ThumbnailImage and requires a long edge ≥ 256 px, else `skipped_no_preview`. Propose/review/apply remain stubs; GPS is never written.
-
-GPS is never written in this slice. There is no network I/O from the app yet.
+**PR 5 — switchable geocoder, cache, and coordinate reconciliation.** `gpsify.geocode` looks up the *primary* place name only (candidates wait for a UI click). Public Nominatim requires `nominatim_contact`, sends `gpsify/0.1 (personal; {email})`, and is capped at 1 rps / 50 uncached lookups per run. Hits are cached under `~/.gpsify/cache/geocode.sqlite` (`normalize(place)|cc|lang`). House-address strings and `privacy_sensitive` / `policy_refusal` guesses are never sent. The pin is the geocoder point; a model hint that disagrees is recorded, not averaged. OSM attribution is exported for the review UI. Propose/review/apply remain stubs; GPS is never written. CI uses `FakeGeocoder`; `GPSIFY_DRY_RUN=1` blocks live geocoder HTTP.
 
 ## Requirements
 
