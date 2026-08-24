@@ -39,4 +39,4 @@ jobs:
           python -m pip install -e ".[dev]"
 
       - name: Run tests with network disabled
-        run: python -m pytest --disable-socket -q
+        run: python -m pytest --disable-socket --allow-unix-socket -q
