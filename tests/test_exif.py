@@ -10,9 +10,13 @@ from gpsify.exif import (
     EXIFTOOL_CHUNK_SIZE,
     EXIFTOOL_READ_ARGS,
     MISSING_EXIFTOOL_WARNING,
-    classify_media,
+    GpsWrite,
     MediaKind,
+    classify_media,
+    dest_gps_matches,
     read_exif_batch,
+    render_exiftool_argfile,
+    write_gps_batch,
 )
 from jpeg_factory import PORTO_LAT, PORTO_LNG, write_test_jpeg
 
@@ -130,3 +134,42 @@ def test_heic_without_exiftool_has_no_gps(
     tags = result.by_path[str(heic.resolve())]
     assert tags.has_gps is False
     assert tags.source == "skipped_heic"
+
+
+@pytest.mark.writes_exif
+def test_piexif_write_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("gpsify.exif.shutil.which", lambda _name: None)
+    path = write_test_jpeg(tmp_path / "w.jpg")
+    errors = write_gps_batch(
+        [
+            GpsWrite(
+                dest=path,
+                lat=PORTO_LAT,
+                lng=PORTO_LNG,
+                kind=MediaKind.jpeg,
+                job_id="job",
+                decision_id="dec",
+            )
+        ]
+    )
+    assert errors[str(path)] is None
+    assert dest_gps_matches(path, PORTO_LAT, PORTO_LNG)
+
+
+def test_write_argfile_uses_execute_and_n(tmp_path: Path) -> None:
+    a = tmp_path / "a.jpg"
+    b = tmp_path / "b.jpg"
+    body = render_exiftool_argfile(
+        [
+            GpsWrite(dest=a, lat=1.0, lng=2.0, kind=MediaKind.jpeg, job_id="j", decision_id="d1"),
+            GpsWrite(dest=b, lat=3.0, lng=4.0, kind=MediaKind.png, job_id="j", decision_id="d2"),
+        ]
+    )
+    assert "-n" in body
+    assert "-execute" in body
+    assert "-overwrite_original" in body
+    assert str(a) in body
+    assert str(b) in body
+    assert "GPSLatitude=1" in body
+    assert "XMP:GPSLatitude=3" in body
+    assert "GPSVersionID" not in body.split("-execute", 1)[1]

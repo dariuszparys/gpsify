@@ -1,26 +1,39 @@
-"""Batched EXIF / XMP read for ingest (PR 3). Writes land in PR 8.
+"""Batched EXIF / XMP read and GPS write.
 
-Preferred path is one ``exiftool -j -fast -n`` process per 200 files. If
+Read (PR 3): one ``exiftool -j -fast -n`` process per 200 files. If
 ``exiftool`` is missing, fall back to Pillow / Piexif **per file** (JPEG only)
 and skip HEIC GPS detection with a warning. RAW sibling ``.xmp`` GPS is merged
 onto the RAW row when the sidecar exists.
+
+Write (PR 8): one ``exiftool -@ argfile`` of per-dest tag sets. JPEG/HEIC get
+EXIF+XMP; PNG gets XMP in-file; RAW gets a sibling ``.xmp`` only. Piexif is
+the JPEG-only test fallback; PNG/RAW XMP is written directly when exiftool is
+missing. ``GPSIFY_DRY_RUN=1`` blocks writes.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any, Never
+from xml.sax.saxutils import escape as xml_escape
+
+import piexif
+from PIL import Image, PngImagePlugin
 
 EXIFTOOL_CHUNK_SIZE = 200
 EXIFTOOL_TIMEOUT_S = 120
+EXIFTOOL_WRITE_TIMEOUT_S = 600
+GPS_MATCH_DEG = 1e-5
 
 EXIFTOOL_READ_ARGS = (
     "-j",
@@ -67,6 +80,8 @@ MISSING_EXIFTOOL_WARNING = (
     "exiftool not found; using Pillow/Piexif for JPEG EXIF only. "
     "HEIC GPS detection skipped."
 )
+HEIC_WRITE_REQUIRES_EXIFTOOL = "HEIC write requires exiftool"
+DRY_RUN_BLOCKS_WRITES = "GPSIFY_DRY_RUN=1 blocks exiftool writes"
 
 
 class MediaKind(str, Enum):
@@ -75,6 +90,20 @@ class MediaKind(str, Enum):
     heic = "heic"
     raw = "raw"
     unsupported = "unsupported"
+
+
+class ExifWriteError(RuntimeError):
+    """GPS write refused or failed before any dest was mutated."""
+
+
+@dataclass(frozen=True)
+class GpsWrite:
+    dest: Path
+    lat: float
+    lng: float
+    kind: MediaKind
+    job_id: str
+    decision_id: str
 
 
 @dataclass(frozen=True)
@@ -247,7 +276,7 @@ def _read_fallback(paths: Sequence[Path]) -> dict[str, ExifRead]:
             case MediaKind.jpeg:
                 result[str(path)] = _read_jpeg_piexif(path)
             case MediaKind.png:
-                result[str(path)] = ExifRead(source="none")
+                result[str(path)] = _read_png_xmp(path)
             case MediaKind.heic:
                 result[str(path)] = ExifRead(source="skipped_heic")
             case MediaKind.raw:
@@ -289,10 +318,6 @@ def _exif_from_exiftool_item(item: dict[str, Any]) -> ExifRead:
 
 
 def _read_jpeg_piexif(path: Path) -> ExifRead:
-    try:
-        import piexif
-    except ImportError:
-        return ExifRead(source="none")
     try:
         exif_dict = piexif.load(str(path))
     except Exception:
@@ -347,10 +372,6 @@ def _merge_sidecar(primary: ExifRead, sidecar: ExifRead) -> ExifRead:
 
 def _gps_from_piexif(gps_ifd: dict[int, Any]) -> tuple[float | None, float | None]:
     if not gps_ifd:
-        return None, None
-    try:
-        import piexif
-    except ImportError:
         return None, None
     lat_raw = gps_ifd.get(piexif.GPSIFD.GPSLatitude)
     lng_raw = gps_ifd.get(piexif.GPSIFD.GPSLongitude)
@@ -440,3 +461,320 @@ def _chunks(items: list[Path], size: int) -> list[list[Path]]:
 
 def _unreachable(value: Never) -> Never:
     raise RuntimeError(f"unhandled media kind: {value!r}")
+
+
+def writes_blocked() -> bool:
+    return os.environ.get("GPSIFY_DRY_RUN", "") == "1"
+
+
+def angular_distance_deg(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Haversine central angle in degrees."""
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlmb = math.radians(lng2 - lng1)
+    chord = (
+        math.sin(dphi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(dlmb / 2) ** 2
+    )
+    return math.degrees(2 * math.asin(min(1.0, math.sqrt(chord))))
+
+
+def gps_matches(
+    lat1: float | None,
+    lng1: float | None,
+    lat2: float,
+    lng2: float,
+    *,
+    max_deg: float = GPS_MATCH_DEG,
+) -> bool:
+    if not _finite(lat1) or not _finite(lng1):
+        return False
+    assert lat1 is not None and lng1 is not None
+    return angular_distance_deg(lat1, lng1, lat2, lng2) < max_deg
+
+
+def read_dest_gps(path: Path) -> tuple[float | None, float | None]:
+    """Read GPS from an image dest or an XMP sidecar."""
+    if not path.is_file():
+        return None, None
+    result = read_exif_batch([path])
+    tags = result.by_path.get(str(path.resolve()), ExifRead())
+    return tags.gps_lat, tags.gps_lng
+
+
+def dest_gps_matches(path: Path, lat: float, lng: float) -> bool:
+    got_lat, got_lng = read_dest_gps(path)
+    return gps_matches(got_lat, got_lng, lat, lng)
+
+
+def gps_instructions(job_id: str, decision_id: str) -> str:
+    return f"Geotagged by gpsify job {job_id} decision {decision_id}"
+
+
+def render_exiftool_argfile(items: Sequence[GpsWrite]) -> str:
+    """Would-be ``exiftool -@`` body. One ``-execute`` block per dest."""
+    blocks: list[str] = []
+    for item in items:
+        blocks.append("\n".join(_argfile_lines(item)))
+    return "\n-execute\n".join(blocks) + ("\n" if blocks else "")
+
+
+def write_gps_batch(items: Sequence[GpsWrite]) -> dict[str, str | None]:
+    """Write GPS tags. Returns dest path string → error (``None`` on GPS verify)."""
+    if writes_blocked():
+        raise ExifWriteError(DRY_RUN_BLOCKS_WRITES)
+    if not items:
+        return {}
+    if exiftool_available():
+        _write_with_exiftool(items)
+    else:
+        _write_fallback(items)
+    errors: dict[str, str | None] = {}
+    for item in items:
+        key = str(item.dest)
+        if dest_gps_matches(item.dest, item.lat, item.lng):
+            errors[key] = None
+        else:
+            errors[key] = "gps_verify_failed"
+    return errors
+
+
+def _argfile_lines(item: GpsWrite) -> list[str]:
+    lat_s = _fmt_coord(item.lat)
+    lng_s = _fmt_coord(item.lng)
+    instructions = gps_instructions(item.job_id, item.decision_id)
+    lines = ["-n"]
+    match item.kind:
+        case MediaKind.jpeg | MediaKind.heic:
+            lines.extend(
+                [
+                    f"-GPSLatitude={lat_s}",
+                    f"-GPSLatitudeRef={_lat_ref(item.lat)}",
+                    f"-GPSLongitude={lng_s}",
+                    f"-GPSLongitudeRef={_lng_ref(item.lng)}",
+                    "-GPSMapDatum=WGS-84",
+                    "-GPSVersionID=2 3 0 0",
+                    f"-XMP:GPSLatitude={lat_s}",
+                    f"-XMP:GPSLongitude={lng_s}",
+                    "-XMP-dc:Source=gpsify",
+                    f"-XMP-photoshop:Instructions={instructions}",
+                    "-overwrite_original",
+                    str(item.dest),
+                ]
+            )
+        case MediaKind.png:
+            lines.extend(
+                [
+                    f"-XMP:GPSLatitude={lat_s}",
+                    f"-XMP:GPSLongitude={lng_s}",
+                    "-XMP-dc:Source=gpsify",
+                    f"-XMP-photoshop:Instructions={instructions}",
+                    "-overwrite_original",
+                    str(item.dest),
+                ]
+            )
+        case MediaKind.raw:
+            lines.extend(
+                [
+                    f"-XMP:GPSLatitude={lat_s}",
+                    f"-XMP:GPSLongitude={lng_s}",
+                    "-XMP-dc:Source=gpsify",
+                    f"-XMP-photoshop:Instructions={instructions}",
+                    "-overwrite_original",
+                    str(item.dest),
+                ]
+            )
+        case MediaKind.unsupported:
+            raise ExifWriteError(f"cannot write GPS for {item.dest}")
+        case _:
+            _unreachable(item.kind)
+    return lines
+
+
+def _write_with_exiftool(items: Sequence[GpsWrite]) -> None:
+    for item in items:
+        if item.kind is MediaKind.raw and not item.dest.is_file():
+            _write_xmp_sidecar(
+                item.dest, item.lat, item.lng, item.job_id, item.decision_id
+            )
+    body = render_exiftool_argfile(items)
+    handle = tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        suffix=".args",
+        delete=False,
+    )
+    try:
+        handle.write(body)
+        handle.close()
+        completed = subprocess.run(
+            ["exiftool", "-@", handle.name],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=EXIFTOOL_WRITE_TIMEOUT_S,
+        )
+        if completed.returncode not in (0, 1):
+            raise ExifWriteError(
+                f"exiftool write exit {completed.returncode}: {completed.stderr.strip()}"
+            )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ExifWriteError(f"exiftool write failed: {exc}") from exc
+    finally:
+        Path(handle.name).unlink(missing_ok=True)
+
+
+def _write_fallback(items: Sequence[GpsWrite]) -> None:
+    for item in items:
+        try:
+            match item.kind:
+                case MediaKind.jpeg:
+                    _write_jpeg_piexif(item.dest, item.lat, item.lng)
+                case MediaKind.png:
+                    _write_png_xmp(item.dest, item.lat, item.lng, item.job_id, item.decision_id)
+                case MediaKind.raw:
+                    _write_xmp_sidecar(item.dest, item.lat, item.lng, item.job_id, item.decision_id)
+                case MediaKind.heic:
+                    continue
+                case MediaKind.unsupported:
+                    continue
+                case _:
+                    _unreachable(item.kind)
+        except Exception:
+            continue
+
+
+def _write_jpeg_piexif(path: Path, lat: float, lng: float) -> None:
+    try:
+        exif_dict = piexif.load(str(path))
+    except Exception:
+        exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
+    gps_ifd = dict(exif_dict.get("GPS") or {})
+    gps_ifd[piexif.GPSIFD.GPSVersionID] = (2, 3, 0, 0)
+    gps_ifd[piexif.GPSIFD.GPSLatitudeRef] = _lat_ref(lat)
+    gps_ifd[piexif.GPSIFD.GPSLatitude] = _deg_to_dms(abs(lat))
+    gps_ifd[piexif.GPSIFD.GPSLongitudeRef] = _lng_ref(lng)
+    gps_ifd[piexif.GPSIFD.GPSLongitude] = _deg_to_dms(abs(lng))
+    gps_ifd[piexif.GPSIFD.GPSMapDatum] = "WGS-84"
+    exif_dict["GPS"] = gps_ifd
+    piexif.insert(piexif.dump(exif_dict), str(path))
+
+
+def _write_png_xmp(path: Path, lat: float, lng: float, job_id: str, decision_id: str) -> None:
+    packet = _xmp_packet(lat, lng, gps_instructions(job_id, decision_id))
+    with Image.open(path) as image:
+        converted = image.convert("RGB")
+        info = PngImagePlugin.PngInfo()
+        for key, value in converted.info.items():
+            if isinstance(value, str) and key != "XML:com.adobe.xmp":
+                info.add_text(key, value)
+        info.add_text("XML:com.adobe.xmp", packet)
+        converted.save(path, "PNG", pnginfo=info)
+
+
+def _write_xmp_sidecar(
+    path: Path, lat: float, lng: float, job_id: str, decision_id: str
+) -> None:
+    instructions = gps_instructions(job_id, decision_id)
+    if path.is_file():
+        text = path.read_text(encoding="utf-8", errors="replace")
+        merged = _merge_xmp_gps(text, lat, lng, instructions)
+    else:
+        merged = _xmp_packet(lat, lng, instructions)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".gpsify-tmp")
+    tmp.write_text(merged, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _read_png_xmp(path: Path) -> ExifRead:
+    try:
+        with Image.open(path) as image:
+            xmp = image.info.get("XML:com.adobe.xmp") or image.info.get("xmp")
+        if isinstance(xmp, bytes):
+            xmp = xmp.decode("utf-8", errors="replace")
+        if isinstance(xmp, str) and xmp.strip():
+            lat = _match_float(xmp, _XMP_LAT_ELEM, _XMP_LAT_ATTR)
+            lng = _match_float(xmp, _XMP_LNG_ELEM, _XMP_LNG_ATTR)
+            return ExifRead(gps_lat=lat, gps_lng=lng, source="xmp")
+    except Exception:
+        pass
+    try:
+        text = path.read_bytes().decode("latin-1", errors="replace")
+    except OSError:
+        return ExifRead(source="none")
+    lat = _match_float(text, _XMP_LAT_ELEM, _XMP_LAT_ATTR)
+    lng = _match_float(text, _XMP_LNG_ELEM, _XMP_LNG_ATTR)
+    if lat is None and lng is None:
+        return ExifRead(source="none")
+    return ExifRead(gps_lat=lat, gps_lng=lng, source="xmp")
+
+
+def _xmp_packet(lat: float, lng: float, instructions: str) -> str:
+    lat_s = _fmt_coord(lat)
+    lng_s = _fmt_coord(lng)
+    inst = xml_escape(instructions, entities={'"': "&quot;"})
+    return (
+        '<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
+        '<x:xmpmeta xmlns:x="adobe:ns:meta/">\n'
+        ' <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n'
+        '  <rdf:Description rdf:about=""\n'
+        '   xmlns:exif="http://ns.adobe.com/exif/1.0/"\n'
+        '   xmlns:dc="http://purl.org/dc/elements/1.1/"\n'
+        '   xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"\n'
+        f'   exif:GPSLatitude="{lat_s}"\n'
+        f'   exif:GPSLongitude="{lng_s}"\n'
+        '   dc:Source="gpsify"\n'
+        f'   photoshop:Instructions="{inst}"/>\n'
+        " </rdf:RDF>\n"
+        "</x:xmpmeta>\n"
+        '<?xpacket end="w"?>\n'
+    )
+
+
+def _merge_xmp_gps(text: str, lat: float, lng: float, instructions: str) -> str:
+    if not text.strip():
+        return _xmp_packet(lat, lng, instructions)
+    lat_s = _fmt_coord(lat)
+    lng_s = _fmt_coord(lng)
+    inst = xml_escape(instructions, entities={'"': "&quot;"})
+    updated, nlat = _XMP_LAT_ELEM.subn(
+        f"<exif:GPSLatitude>{lat_s}</exif:GPSLatitude>", text, count=1
+    )
+    if nlat == 0:
+        updated, nlat = _XMP_LAT_ATTR.subn(f'exif:GPSLatitude="{lat_s}"', updated, count=1)
+    updated, nlng = _XMP_LNG_ELEM.subn(
+        f"<exif:GPSLongitude>{lng_s}</exif:GPSLongitude>", updated, count=1
+    )
+    if nlng == 0:
+        updated, nlng = _XMP_LNG_ATTR.subn(f'exif:GPSLongitude="{lng_s}"', updated, count=1)
+    if nlat == 0 or nlng == 0:
+        insertion = (
+            f' exif:GPSLatitude="{lat_s}" exif:GPSLongitude="{lng_s}" '
+            f'dc:Source="gpsify" photoshop:Instructions="{inst}"'
+        )
+        if "rdf:Description" in updated:
+            updated = updated.replace("<rdf:Description", f"<rdf:Description{insertion}", 1)
+        else:
+            return _xmp_packet(lat, lng, instructions)
+    return updated
+
+
+def _fmt_coord(value: float) -> str:
+    return f"{value:.8f}".rstrip("0").rstrip(".")
+
+
+def _lat_ref(lat: float) -> str:
+    return "N" if lat >= 0 else "S"
+
+
+def _lng_ref(lng: float) -> str:
+    return "E" if lng >= 0 else "W"
+
+
+def _deg_to_dms(deg: float) -> tuple[tuple[int, int], tuple[int, int], tuple[int, int]]:
+    degrees = int(deg)
+    minutes_float = (deg - degrees) * 60
+    minutes = int(minutes_float)
+    seconds = (minutes_float - minutes) * 60
+    return (degrees, 1), (minutes, 1), (int(round(seconds * 10000)), 10000)

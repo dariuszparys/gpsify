@@ -6,9 +6,9 @@ This repository is a macOS-first, local-first CLI plus a localhost review UI. Th
 
 ## Status
 
-**PR 7 — localhost review UI, decide helper, and skip --all-low.** `gpsify review` serves a Leaflet filmstrip/map UI bound to **127.0.0.1 only** (no LAN flag). Accept / edit-pin / skip / apply-to-cluster go through `repo.add_decision`; thumbs and previews are lazy and looked up by `photo_id`. Place search is **Enter-only** (no Nominatim typeahead). `gpsify decide` is the script seam over `add_decision`. `gpsify skip --all-low` lists `ui_rank < 0.55` and writes skips only with `--yes` (or a TTY confirm). **No EXIF / GPS writes** — `apply` / `undo` stay stubs.
+**PR 8 — apply, undo, dry-run writes.** `gpsify apply` writes GPS from the **current decision only** (never `proposal.pin_*`). Default dest is `~/.gpsify/jobs/<id>/copies/`; `--out DIR` and `--in-place` (with `--i-mean-it` or a TTY confirm) are explicit. Dest inspection runs before any ingest-hash abort. JPEG/HEIC get in-file EXIF+XMP; PNG in-file XMP; RAW a sibling `.xmp` only. `gpsify undo` restores the pre-exiftool backup (or deletes/restores a RAW sidecar) and sets the receipt to `undone`. `--dry-run` prints the would-be `exiftool` argfile and writes nothing. `GPSIFY_DRY_RUN=1` blocks writes in unit tests unless `@pytest.mark.writes_exif`.
 
-GPS is never written in this slice.
+GPS is never written without a stored current decision.
 
 ## Requirements
 
@@ -80,7 +80,7 @@ gpsify status [job_id] [--json]
 gpsify clean <job_id>
 ```
 
-Typical session (`apply` lands in PR 8):
+Typical session:
 
 ```bash
 export XAI_API_KEY=...
@@ -90,7 +90,7 @@ gpsify review <job_id>
 gpsify apply <job_id>
 ```
 
-`apply` with no flags writes copies under `~/.gpsify/jobs/<id>/copies/`. `--in-place` is explicit.
+`apply` with no flags writes copies under `~/.gpsify/jobs/<id>/copies/`. `--in-place` requires `--i-mean-it` or a TTY confirm.
 
 ## Tests
 

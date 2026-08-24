@@ -1,4 +1,4 @@
-"""Typer CLI. ``apply`` / ``undo`` / ``status`` / ``clean`` stay stubs until later PRs."""
+"""Typer CLI. ``status`` / ``clean`` stay stubs until PR 9."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from typing import Never
 import typer
 
 from gpsify import __version__
+from gpsify.apply import ApplyError, run_apply
 from gpsify.config import load_settings
 from gpsify.geocode import GeocodeConfigError, require_geocoder_ready
 from gpsify.ingest import IngestError, run_ingest
@@ -18,6 +19,7 @@ from gpsify.propose import ProposeError, run_propose
 from gpsify.review import REVIEW_HOST, ReviewError, create_app, list_low_rank_photos, serve_review
 from gpsify.store import DecisionError, JobRepo, StoreError
 from gpsify.types import DecisionAction
+from gpsify.undo import UndoError, run_undo
 
 app = typer.Typer(
     name="gpsify",
@@ -225,12 +227,46 @@ def apply(
     out: Path | None = typer.Option(None, "--out", help="Write copies under DIR/<relpath>."),
     in_place: bool = typer.Option(False, "--in-place", help="Mutate sources (or RAW sidecars)."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print would-be writes; mutate nothing."),
+    i_mean_it: bool = typer.Option(
+        False,
+        "--i-mean-it",
+        help="Confirm --in-place without a TTY prompt.",
+    ),
 ) -> None:
     """Write GPS from the current decision only. Default dest is the job copies/ tree."""
     if out is not None and in_place:
         typer.echo("error: --out and --in-place are mutually exclusive", err=True)
         raise typer.Exit(code=2)
-    _not_implemented("apply")
+    if in_place and not dry_run and not i_mean_it:
+        if not sys.stdin.isatty():
+            typer.echo("error: pass --i-mean-it to apply --in-place (not a TTY)", err=True)
+            raise typer.Exit(code=2)
+        if not typer.confirm("Mutate originals in place?"):
+            raise typer.Exit(code=1)
+        i_mean_it = True
+    settings = load_settings()
+    try:
+        summary = asyncio.run(
+            run_apply(
+                job_id,
+                data_dir=settings.data_dir,
+                out=out,
+                in_place=in_place,
+                dry_run=dry_run,
+                i_mean_it=i_mean_it or dry_run,
+                progress=lambda message: typer.echo(message),
+            )
+        )
+    except (ApplyError, StoreError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    if summary.dry_run:
+        return
+    if summary.eligible == 0:
+        typer.echo("nothing accepted to apply", err=True)
+        raise typer.Exit(code=3)
+    if summary.failed:
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -239,7 +275,21 @@ def undo(
     photo: Path | None = typer.Option(None, "--photo", help="Limit undo to one source path."),
 ) -> None:
     """Restore the backup taken before exiftool (or delete/restore a RAW sidecar)."""
-    _not_implemented("undo")
+    settings = load_settings()
+    try:
+        summary = asyncio.run(
+            run_undo(
+                job_id,
+                data_dir=settings.data_dir,
+                photo=photo,
+                progress=lambda message: typer.echo(message),
+            )
+        )
+    except (UndoError, StoreError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    if summary.failed:
+        raise typer.Exit(code=1)
 
 
 @app.command("skip")

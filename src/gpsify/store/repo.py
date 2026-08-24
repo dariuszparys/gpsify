@@ -773,6 +773,19 @@ class JobRepo:
         )
         return rid
 
+    async def list_write_receipts(self) -> list[dict[str, Any]]:
+        cursor = await self._db.execute(
+            """
+            SELECT write_receipt.*
+            FROM write_receipt
+            JOIN photo ON photo.id = write_receipt.photo_id
+            WHERE photo.job_id = ?
+            ORDER BY write_receipt.dest_path
+            """,
+            (self.job_id,),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
     async def get_write_receipt(
         self, photo_id: str, dest_path: str
     ) -> dict[str, Any] | None:
