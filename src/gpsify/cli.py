@@ -1,4 +1,4 @@
-"""Typer CLI. Subcommands beyond ``ingest`` are stubs until later design PRs land."""
+"""Typer CLI. Subcommands beyond ``ingest`` / ``propose`` are stubs until later PRs."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import typer
 from gpsify import __version__
 from gpsify.config import load_settings
 from gpsify.ingest import IngestError, run_ingest
+from gpsify.propose import ProposeError, run_propose
 from gpsify.store import StoreError
 
 app = typer.Typer(
@@ -107,7 +108,29 @@ def propose(
     ),
 ) -> None:
     """Call vision + geocode; write proposals. Does not write GPS."""
-    _not_implemented("propose")
+    settings = load_settings()
+    try:
+        summary = asyncio.run(
+            run_propose(
+                job_id,
+                settings=settings,
+                limit=limit,
+                concurrency=concurrency,
+                dry_run=dry_run,
+                force=force,
+                no_context=no_context,
+                provider_name=provider,
+                geocode_uncached_max=geocode_uncached_max,
+                progress=lambda message: typer.echo(message),
+            )
+        )
+    except (ProposeError, StoreError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    for warning in summary.warnings:
+        typer.echo(f"warning: {warning}", err=True)
+    if summary.error:
+        raise typer.Exit(code=1)
 
 
 @app.command()
