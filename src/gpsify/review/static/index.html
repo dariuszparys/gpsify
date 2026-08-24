@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>gpsify review</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="chrome">
+    <strong>gpsify</strong>
+    <span id="job-meta"></span>
+    <nav id="filters" class="filters">
+      <button type="button" data-filter="needs_review" class="active">needs review</button>
+      <button type="button" data-filter="low">low UI rank</button>
+      <button type="button" data-filter="refused">refused</button>
+      <button type="button" data-filter="accepted">accepted</button>
+      <button type="button" data-filter="all">all</button>
+    </nav>
+  </header>
+  <main class="layout">
+    <aside id="filmstrip" class="filmstrip" aria-label="Photos"></aside>
+    <section class="preview-pane">
+      <img id="preview" alt="Photo preview" />
+      <p id="preview-empty" class="muted">No photos in this filter.</p>
+    </section>
+    <section class="map-pane">
+      <div id="map"></div>
+      <p class="attribution" id="osm-attribution">© OpenStreetMap contributors</p>
+      <div id="details">
+        <div class="row">
+          <span id="rank-badge" class="badge">—</span>
+          <span id="place-name"></span>
+        </div>
+        <p id="granularity" class="muted"></p>
+        <p id="disagree" class="warn hidden"></p>
+        <ul id="clues"></ul>
+        <ul id="candidates"></ul>
+        <label class="search-label" for="place-search">Place search (Enter to geocode)</label>
+        <input id="place-search" type="search" autocomplete="off" placeholder="Place name" />
+      </div>
+    </section>
+  </main>
+  <footer class="bar">
+    <button type="button" id="btn-accept" data-key="a">Accept (a)</button>
+    <button type="button" id="btn-skip" data-key="s">Skip (s)</button>
+    <button type="button" id="btn-edit" data-key="e">Edit pin (e)</button>
+    <button type="button" id="btn-cluster" data-key="c">Apply to cluster (c)</button>
+    <button type="button" id="btn-model" class="hidden">Use model coordinates</button>
+    <button type="button" id="btn-next">Next</button>
+    <span id="status-msg" class="muted"></span>
+  </footer>
+  <dialog id="cluster-dialog">
+    <form method="dialog" id="cluster-form">
+      <h2>Apply to cluster</h2>
+      <p class="muted">Default: proposed members only. Extra ids are rejected by the server.</p>
+      <ul id="cluster-members"></ul>
+      <p id="cluster-confirm-wrap" class="hidden">
+        <label for="cluster-confirm">Type cluster size to confirm</label>
+        <input id="cluster-confirm" type="number" min="1" />
+      </p>
+      <menu>
+        <button type="submit" value="cancel">Cancel</button>
+        <button type="submit" value="apply" id="cluster-apply-btn">Apply</button>
+      </menu>
+    </form>
+  </dialog>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

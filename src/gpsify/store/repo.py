@@ -700,6 +700,32 @@ class JobRepo:
         )
         return _row(await cursor.fetchone())
 
+    async def list_current_decisions(self) -> list[dict[str, Any]]:
+        cursor = await self._db.execute(
+            """
+            SELECT decision.*
+            FROM decision
+            JOIN photo ON photo.id = decision.photo_id
+            WHERE photo.job_id = ? AND decision.current = 1
+            """,
+            (self.job_id,),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def list_photos_in_cluster(self, cluster_id: str) -> list[dict[str, Any]]:
+        cursor = await self._db.execute(
+            """
+            SELECT id, job_id, path, relpath, sha256, size, mtime_ns, status, error,
+                   datetime_original, make, model, has_gps, existing_lat, existing_lng,
+                   cluster_id, updated_at
+            FROM photo
+            WHERE job_id = ? AND cluster_id = ?
+            ORDER BY relpath
+            """,
+            (self.job_id, cluster_id),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
     async def upsert_write_receipt(
         self,
         *,

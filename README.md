@@ -6,7 +6,7 @@ This repository is a macOS-first, local-first CLI plus a localhost review UI. Th
 
 ## Status
 
-**PR 6 — xAI grok-4.6 vision proposals.** `gpsify propose` sends a lazy 1280px JPEG preview to Grok (`store=False` / `store_messages=False`, `reasoning_effort` required), geocodes the *primary* place name, reconciles the pin, and writes a proposal row. It does **not** write GPS. `--dry-run` is network-free (planned calls; geocode cache reads allowed). `--no-context` strips hint/folder/filename/siblings. Stale `proposing` rows reset to `pending`. A pid lock at `jobs/<id>/propose.lock` makes a second `propose` exit 2. Fake vision/geocoder in unit tests; `GPSIFY_DRY_RUN=1` blocks live xAI HTTP. Review/apply/undo remain stubs.
+**PR 7 — localhost review UI, decide helper, and skip --all-low.** `gpsify review` serves a Leaflet filmstrip/map UI bound to **127.0.0.1 only** (no LAN flag). Accept / edit-pin / skip / apply-to-cluster go through `repo.add_decision`; thumbs and previews are lazy and looked up by `photo_id`. Place search is **Enter-only** (no Nominatim typeahead). `gpsify decide` is the script seam over `add_decision`. `gpsify skip --all-low` lists `ui_rank < 0.55` and writes skips only with `--yes` (or a TTY confirm). **No EXIF / GPS writes** — `apply` / `undo` stay stubs.
 
 GPS is never written in this slice.
 
@@ -80,7 +80,7 @@ gpsify status [job_id] [--json]
 gpsify clean <job_id>
 ```
 
-Typical session (review/apply land in later PRs):
+Typical session (`apply` lands in PR 8):
 
 ```bash
 export XAI_API_KEY=...
