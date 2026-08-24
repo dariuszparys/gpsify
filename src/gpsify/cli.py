@@ -1,17 +1,23 @@
-"""Typer CLI. Subcommands beyond ``ingest`` / ``propose`` are stubs until later PRs."""
+"""Typer CLI. ``apply`` / ``undo`` / ``status`` / ``clean`` stay stubs until later PRs."""
 
 from __future__ import annotations
 
 import asyncio
+import sys
+import webbrowser
 from pathlib import Path
+from typing import Never
 
 import typer
 
 from gpsify import __version__
 from gpsify.config import load_settings
+from gpsify.geocode import GeocodeConfigError, require_geocoder_ready
 from gpsify.ingest import IngestError, run_ingest
 from gpsify.propose import ProposeError, run_propose
-from gpsify.store import StoreError
+from gpsify.review import REVIEW_HOST, ReviewError, create_app, list_low_rank_photos, serve_review
+from gpsify.store import DecisionError, JobRepo, StoreError
+from gpsify.types import DecisionAction
 
 app = typer.Typer(
     name="gpsify",
@@ -36,6 +42,10 @@ def _version_callback(value: bool) -> None:
     if value:
         typer.echo(f"gpsify {__version__}")
         raise typer.Exit()
+
+
+def _unreachable(value: Never) -> Never:
+    raise ReviewError(f"unhandled value: {value!r}")
 
 
 @app.callback()
@@ -139,7 +149,27 @@ def review(
     port: int = typer.Option(8765, "--port", help="Loopback port (binds 127.0.0.1 only)."),
 ) -> None:
     """Open the localhost review UI (loopback only)."""
-    _not_implemented("review")
+    settings = load_settings()
+    try:
+        require_geocoder_ready(settings)
+    except GeocodeConfigError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    async def _probe() -> None:
+        repo = await JobRepo.open(settings.data_dir, job_id)
+        await repo.close()
+
+    try:
+        asyncio.run(_probe())
+    except StoreError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    starlette_app = create_app(settings=settings, job_id=job_id)
+    url = f"http://{REVIEW_HOST}:{port}"
+    typer.echo(f"{url}  (loopback only; no LAN bind)")
+    webbrowser.open(url)
+    serve_review(starlette_app, port)
 
 
 @app.command()
@@ -155,7 +185,38 @@ def decide(
     lng: float | None = typer.Option(None, "--lng", help="Required for accept_edited."),
 ) -> None:
     """Test/script seam over add_decision. Not the review UX."""
-    _not_implemented("decide")
+    try:
+        action_enum = DecisionAction(action)
+    except ValueError:
+        typer.echo("error: --action must be accept, skip, or accept_edited", err=True)
+        raise typer.Exit(code=2) from None
+    match action_enum:
+        case DecisionAction.accept | DecisionAction.skip | DecisionAction.accept_edited:
+            pass
+        case DecisionAction.cluster_apply:
+            typer.echo(
+                "error: cluster_apply is the review API; use accept/skip/accept_edited",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        case _:
+            _unreachable(action_enum)
+    settings = load_settings()
+
+    async def _run() -> str:
+        repo = await JobRepo.open(settings.data_dir, job_id)
+        try:
+            return await repo.add_decision(photo, action_enum, lat=lat, lng=lng)
+        finally:
+            await repo.close()
+
+    try:
+        decision_id = asyncio.run(_run())
+    except (DecisionError, StoreError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(decision_id)
+    typer.echo(action_enum.value)
 
 
 @app.command()
@@ -188,7 +249,52 @@ def skip_cmd(
     yes: bool = typer.Option(False, "--yes", help="Write skip decisions without a TTY confirm."),
 ) -> None:
     """Preview (and with --yes, write) skip decisions for low UI-rank photos."""
-    _not_implemented("skip")
+    if not all_low:
+        typer.echo("error: --all-low is required", err=True)
+        raise typer.Exit(code=2)
+    settings = load_settings()
+
+    async def _list() -> list[dict]:
+        repo = await JobRepo.open(settings.data_dir, job_id)
+        try:
+            return await list_low_rank_photos(repo)
+        finally:
+            await repo.close()
+
+    try:
+        rows = asyncio.run(_list())
+    except StoreError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    if not rows:
+        typer.echo("no low-rank proposed photos")
+        return
+    typer.echo(f"low-rank photos (ui_rank < 0.55): {len(rows)}")
+    for row in rows:
+        place = row.get("place_name") or ""
+        typer.echo(f"  {row['id']}  {row['relpath']}  {row['ui_rank']:.2f}  {place}")
+    if not yes:
+        if not sys.stdin.isatty():
+            typer.echo("error: pass --yes to write skip decisions (not a TTY)", err=True)
+            raise typer.Exit(code=2)
+        if not typer.confirm(f"Write skip decisions for {len(rows)} photos?"):
+            raise typer.Exit(code=1)
+
+    async def _write() -> int:
+        repo = await JobRepo.open(settings.data_dir, job_id)
+        try:
+            for row in rows:
+                await repo.add_decision(row["id"], DecisionAction.skip)
+            return len(rows)
+        finally:
+            await repo.close()
+
+    try:
+        written = asyncio.run(_write())
+    except (DecisionError, StoreError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"skipped {written} photos")
 
 
 @app.command()

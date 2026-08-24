@@ -23,6 +23,8 @@ dependencies = [
   "httpx>=0.27",
   "pillow>=10.0",
   "piexif>=1.1.3",
+  "starlette>=0.40",
+  "uvicorn>=0.32",
 ]
 
 [project.optional-dependencies]
@@ -50,6 +52,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"gpsify.review" = ["static/*"]
 
 [dependency-groups]
 dev = [
