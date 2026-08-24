@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from collections.abc import Coroutine
 from pathlib import Path
 from typing import Any, TypeVar
@@ -44,6 +45,11 @@ from jpeg_factory import PORTO_LAT, PORTO_LNG, write_test_jpeg
 T = TypeVar("T")
 runner = CliRunner()
 PORTO = "Clérigos Church, Porto, Portugal"
+_ANSI_SGR = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    return _ANSI_SGR.sub("", text)
 
 
 def run(coro: Coroutine[Any, Any, T]) -> T:
@@ -586,9 +592,10 @@ def test_cli_propose_help_and_dry_run(
 ) -> None:
     help_result = runner.invoke(app, ["propose", "--help"])
     assert help_result.exit_code == 0
-    assert "--dry-run" in help_result.stdout
-    assert "--no-context" in help_result.stdout
-    assert "--force" in help_result.stdout
+    help_out = _plain(help_result.stdout)
+    assert "--dry-run" in help_out
+    assert "--no-context" in help_out
+    assert "--force" in help_out
     folder = tmp_path / "album"
     ingested = _ingest_plain(folder, data_dir)
     monkeypatch.setenv("GPSIFY_DATA_DIR", str(data_dir))
@@ -597,7 +604,7 @@ def test_cli_propose_help_and_dry_run(
     monkeypatch.setenv("XAI_API_KEY", "test-key")
     result = runner.invoke(app, ["propose", ingested.job_id, "--dry-run"])
     assert result.exit_code == 0
-    combined = f"{result.stdout}{result.stderr}"
+    combined = _plain(f"{result.stdout}{result.stderr}")
     assert "vision calls planned" in combined
 
 
@@ -610,7 +617,7 @@ def test_cli_rejects_gemini(tmp_path: Path, data_dir: Path, monkeypatch: pytest.
     monkeypatch.setenv("XAI_API_KEY", "test-key")
     result = runner.invoke(app, ["propose", ingested.job_id, "--provider", "gemini"])
     assert result.exit_code == 2
-    assert "xai only" in f"{result.stdout}{result.stderr}".lower()
+    assert "xai only" in _plain(f"{result.stdout}{result.stderr}").lower()
 
 
 def test_house_address_not_geocoded(tmp_path: Path, data_dir: Path) -> None:
