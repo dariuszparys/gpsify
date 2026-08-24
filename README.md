@@ -6,7 +6,7 @@ This repository is a macOS-first, local-first CLI plus a localhost review UI. Th
 
 ## Status
 
-**PR 2 — SQLite job store + global index.** Schema v1 is complete: `~/.gpsify/gpsify.sqlite` (required job index) and `jobs/<id>/job.sqlite` (WAL, `user_version=1`, including `photo.size` / `mtime_ns` / `error` / `updated_at` / `relpath`, `cluster`, `proposal.current`, `decision.current`, `write_receipt` statuses `pending|ok|failed|undone`, `job.stats_json`, token columns). `repo.add_decision` is the only decision mutator (copy proposal pin on bare accept; reject `pin_source=none`; last-write-wins). Shared Pydantic types, including `PhotoStatus`, live in `gpsify.types`. CLI command bodies remain stubs (exit 2) until later slices.
+**PR 3 — folder ingest, batched EXIF read, clustering.** `gpsify ingest` walks a folder, classifies JPEG/HEIC/PNG/RAW, hashes files, reads EXIF in `exiftool` chunks of 200 (Pillow/Piexif JPEG fallback), and writes the job store. Resume is by canonical root + `--recursive` via the global index. Re-ingest applies sha256-reset / `missing` rules. `--relocate JOB_ID` rebinds a moved folder by hash. Photos.app `*.photoslibrary` bundles are refused (exit 2). Clusters are time+folder (45-minute dated gap; one undated bucket per directory; mtime is not capture time). HEIC decode and RAW preview extract wait for PR 4. Propose/review/apply remain stubs.
 
 GPS is never written in this slice. There is no network I/O from the app yet.
 

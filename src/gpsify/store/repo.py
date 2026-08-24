@@ -294,6 +294,129 @@ class JobRepo:
         )
         return _row(await cursor.fetchone())
 
+    async def get_photo_by_path(self, path: str) -> dict[str, Any] | None:
+        cursor = await self._db.execute(
+            """
+            SELECT id, job_id, path, relpath, sha256, size, mtime_ns, status, error,
+                   datetime_original, make, model, has_gps, existing_lat, existing_lng,
+                   cluster_id, updated_at
+            FROM photo
+            WHERE job_id = ? AND path = ?
+            """,
+            (self.job_id, path),
+        )
+        return _row(await cursor.fetchone())
+
+    async def list_photos(self) -> list[dict[str, Any]]:
+        cursor = await self._db.execute(
+            """
+            SELECT id, job_id, path, relpath, sha256, size, mtime_ns, status, error,
+                   datetime_original, make, model, has_gps, existing_lat, existing_lng,
+                   cluster_id, updated_at
+            FROM photo
+            WHERE job_id = ?
+            ORDER BY relpath
+            """,
+            (self.job_id,),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def list_photos_by_sha256(self, sha256: str) -> list[dict[str, Any]]:
+        cursor = await self._db.execute(
+            """
+            SELECT id, job_id, path, relpath, sha256, size, mtime_ns, status, error,
+                   datetime_original, make, model, has_gps, existing_lat, existing_lng,
+                   cluster_id, updated_at
+            FROM photo
+            WHERE job_id = ? AND sha256 = ?
+            """,
+            (self.job_id, sha256),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def count_photos_by_status(self) -> dict[str, int]:
+        cursor = await self._db.execute(
+            """
+            SELECT status, COUNT(*) AS n
+            FROM photo
+            WHERE job_id = ?
+            GROUP BY status
+            """,
+            (self.job_id,),
+        )
+        return {str(row["status"]): int(row["n"]) for row in await cursor.fetchall()}
+
+    async def update_photo(self, photo_id: str, **fields: Any) -> None:
+        """Patch selected photo columns. Unknown keys are rejected."""
+        if not fields:
+            return
+        allowed = {
+            "path",
+            "relpath",
+            "sha256",
+            "size",
+            "mtime_ns",
+            "status",
+            "error",
+            "datetime_original",
+            "make",
+            "model",
+            "has_gps",
+            "existing_lat",
+            "existing_lng",
+            "cluster_id",
+            "updated_at",
+        }
+        unknown = set(fields) - allowed
+        if unknown:
+            raise StoreError(f"cannot update photo fields {sorted(unknown)}")
+        values = dict(fields)
+        if "status" in values:
+            values["status"] = _as_photo_status(values["status"]).value
+        if "has_gps" in values:
+            values["has_gps"] = int(bool(values["has_gps"]))
+        if "updated_at" not in values:
+            values["updated_at"] = utc_now_iso()
+        assignments = ", ".join(f"{column} = ?" for column in values)
+        cursor = await self._db.execute(
+            f"UPDATE photo SET {assignments} WHERE id = ?",
+            (*values.values(), photo_id),
+        )
+        if cursor.rowcount == 0:
+            raise StoreError(f"unknown photo {photo_id!r}")
+
+    async def clear_current_proposal(self, photo_id: str) -> None:
+        await self._db.execute(
+            "UPDATE proposal SET current = 0 WHERE photo_id = ? AND current = 1",
+            (photo_id,),
+        )
+
+    async def clear_current_decision(self, photo_id: str) -> None:
+        await self._db.execute(
+            "UPDATE decision SET current = 0 WHERE photo_id = ? AND current = 1",
+            (photo_id,),
+        )
+
+    async def list_clusters(self) -> list[dict[str, Any]]:
+        cursor = await self._db.execute(
+            """
+            SELECT id, job_id, parent, first_ts, n, undated
+            FROM cluster
+            WHERE job_id = ?
+            ORDER BY parent, first_ts
+            """,
+            (self.job_id,),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def delete_clusters(self) -> None:
+        """Drop cluster rows for this job after detaching photos (FK-safe)."""
+        await self._db.execute(
+            "UPDATE photo SET cluster_id = NULL WHERE job_id = ?",
+            (self.job_id,),
+        )
+        await self._db.execute("DELETE FROM cluster WHERE job_id = ?", (self.job_id,))
+
     async def set_photo_status(
         self,
         photo_id: str,

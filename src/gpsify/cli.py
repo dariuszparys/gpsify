@@ -1,12 +1,16 @@
-"""Typer CLI. Subcommands beyond ``--help`` are stubs until later design PRs land."""
+"""Typer CLI. Subcommands beyond ``ingest`` are stubs until later design PRs land."""
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import typer
 
 from gpsify import __version__
+from gpsify.config import load_settings
+from gpsify.ingest import IngestError, run_ingest
+from gpsify.store import StoreError
 
 app = typer.Typer(
     name="gpsify",
@@ -59,7 +63,28 @@ def ingest(
     ),
 ) -> None:
     """Ingest a folder; print job_id and counts (tagged / untagged / skipped)."""
-    _not_implemented("ingest")
+    settings = load_settings()
+    try:
+        summary = asyncio.run(
+            run_ingest(
+                folder,
+                hint=hint,
+                recursive=recursive,
+                relocate=relocate,
+                data_dir=settings.data_dir,
+            )
+        )
+    except (IngestError, StoreError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(summary.job_id)
+    typer.echo(
+        f"tagged: {summary.tagged}  untagged: {summary.untagged}  "
+        f"skipped: {summary.skipped}  missing: {summary.missing}  "
+        f"clusters: {summary.clusters}"
+    )
+    for warning in summary.warnings:
+        typer.echo(f"warning: {warning}", err=True)
 
 
 @app.command()
