@@ -83,6 +83,17 @@ class JobIndex:
         )
         return _row(await cursor.fetchone())
 
+    async def list_jobs(self) -> list[dict[str, Any]]:
+        """Newest ingest first. Empty when the index has no rows yet."""
+        cursor = await self._db.execute(
+            """
+            SELECT job_id, root_canonical, options_hash, created_at, last_ingest_at
+            FROM job_index
+            ORDER BY last_ingest_at DESC, job_id
+            """
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
     async def register(
         self,
         job_id: str,

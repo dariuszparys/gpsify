@@ -53,11 +53,18 @@ def test_ingest_help_documents_flags() -> None:
     assert "--relocate" in stdout
 
 
-def test_stub_command_exits_2() -> None:
-    result = runner.invoke(app, ["status"])
-    assert result.exit_code == 2
-    combined = _plain(f"{result.stdout}{result.stderr}")
-    assert "not implemented" in combined.lower()
+def test_status_help_documents_json() -> None:
+    result = runner.invoke(app, ["status", "--help"])
+    assert result.exit_code == 0
+    stdout = _plain(result.stdout)
+    assert "--json" in stdout
+
+
+def test_clean_help() -> None:
+    result = runner.invoke(app, ["clean", "--help"])
+    assert result.exit_code == 0
+    stdout = _plain(result.stdout)
+    assert "previews" in stdout.lower() or "thumbs" in stdout.lower()
 
 
 def test_apply_rejects_out_and_in_place_together() -> None:

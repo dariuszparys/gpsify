@@ -6,7 +6,7 @@ This repository is a macOS-first, local-first CLI plus a localhost review UI. Th
 
 ## Status
 
-**PR 8 — apply, undo, dry-run writes.** `gpsify apply` writes GPS from the **current decision only** (never `proposal.pin_*`). Default dest is `~/.gpsify/jobs/<id>/copies/`; `--out DIR` and `--in-place` (with `--i-mean-it` or a TTY confirm) are explicit. Dest inspection runs before any ingest-hash abort. JPEG/HEIC get in-file EXIF+XMP; PNG in-file XMP; RAW a sibling `.xmp` only. `gpsify undo` restores the pre-exiftool backup (or deletes/restores a RAW sidecar) and sets the receipt to `undone`. `--dry-run` prints the would-be `exiftool` argfile and writes nothing. `GPSIFY_DRY_RUN=1` blocks writes in unit tests unless `@pytest.mark.writes_exif`.
+**PR 9 — status `--json` rollup and clean previews.** `gpsify status [job_id] --json` reads `job.stats_json` plus live photo counts and prints the default dest root (`jobs/<id>/copies/`). `gpsify clean <job_id>` deletes `previews/` and `thumbs/` and keeps sqlite + backups. Cost counters are written by `propose` / `apply`; this slice only exposes them.
 
 GPS is never written without a stored current decision.
 
