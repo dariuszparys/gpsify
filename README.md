@@ -6,7 +6,9 @@ This repository is a macOS-first, local-first CLI plus a localhost review UI. Th
 
 ## Status
 
-**PR 5 — switchable geocoder, cache, and coordinate reconciliation.** `gpsify.geocode` looks up the *primary* place name only (candidates wait for a UI click). Public Nominatim requires `nominatim_contact`, sends `gpsify/0.1 (personal; {email})`, and is capped at 1 rps / 50 uncached lookups per run. Hits are cached under `~/.gpsify/cache/geocode.sqlite` (`normalize(place)|cc|lang`). House-address strings and `privacy_sensitive` / `policy_refusal` guesses are never sent. The pin is the geocoder point; a model hint that disagrees is recorded, not averaged. OSM attribution is exported for the review UI. Propose/review/apply remain stubs; GPS is never written. CI uses `FakeGeocoder`; `GPSIFY_DRY_RUN=1` blocks live geocoder HTTP.
+**PR 6 — xAI grok-4.6 vision proposals.** `gpsify propose` sends a lazy 1280px JPEG preview to Grok (`store=False` / `store_messages=False`, `reasoning_effort` required), geocodes the *primary* place name, reconciles the pin, and writes a proposal row. It does **not** write GPS. `--dry-run` is network-free (planned calls; geocode cache reads allowed). `--no-context` strips hint/folder/filename/siblings. Stale `proposing` rows reset to `pending`. A pid lock at `jobs/<id>/propose.lock` makes a second `propose` exit 2. Fake vision/geocoder in unit tests; `GPSIFY_DRY_RUN=1` blocks live xAI HTTP. Review/apply/undo remain stubs.
+
+GPS is never written in this slice.
 
 ## Requirements
 
@@ -78,7 +80,7 @@ gpsify status [job_id] [--json]
 gpsify clean <job_id>
 ```
 
-Typical session (once later PRs land):
+Typical session (review/apply land in later PRs):
 
 ```bash
 export XAI_API_KEY=...

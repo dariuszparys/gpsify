@@ -539,6 +539,18 @@ class JobRepo:
         )
         return _row(await cursor.fetchone())
 
+    async def list_current_proposals(self) -> list[dict[str, Any]]:
+        cursor = await self._db.execute(
+            """
+            SELECT proposal.*
+            FROM proposal
+            JOIN photo ON photo.id = proposal.photo_id
+            WHERE photo.job_id = ? AND proposal.current = 1
+            """,
+            (self.job_id,),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
     async def add_decision(
         self,
         photo_id: str,
