@@ -6,7 +6,7 @@ This repository is a macOS-first, local-first CLI plus a localhost review UI. Th
 
 ## Status
 
-**PR 1 — project skeleton.** The `gpsify` console script installs and prints `--help`. Settings load from the environment and `~/.gpsify/config.toml`. Shared Pydantic types live in `gpsify.types`. Ingest, propose, review, apply, and the rest of the commands are stubs (exit 2) until later slices.
+**PR 2 — SQLite job store + global index.** Schema v1 is complete: `~/.gpsify/gpsify.sqlite` (required job index) and `jobs/<id>/job.sqlite` (WAL, `user_version=1`, including `photo.size` / `mtime_ns` / `error` / `updated_at` / `relpath`, `cluster`, `proposal.current`, `decision.current`, `write_receipt` statuses `pending|ok|failed|undone`, `job.stats_json`, token columns). `repo.add_decision` is the only decision mutator (copy proposal pin on bare accept; reject `pin_source=none`; last-write-wins). Shared Pydantic types, including `PhotoStatus`, live in `gpsify.types`. CLI command bodies remain stubs (exit 2) until later slices.
 
 GPS is never written in this slice. There is no network I/O from the app yet.
 
@@ -92,13 +92,13 @@ gpsify apply <job_id>
 
 ## Tests
 
-**GitHub Actions is the source of truth** for CI. The workflow runs `pytest --disable-socket` with `GPSIFY_DRY_RUN=1`. No live xAI, Nominatim, or GPS writes.
+**GitHub Actions is the source of truth** for CI. The workflow runs `pytest --disable-socket --allow-unix-socket` with `GPSIFY_DRY_RUN=1`. Unix sockets are allowed so asyncio/aiosqlite can create an event loop; TCP/UDP stay blocked. No live xAI, Nominatim, or GPS writes.
 
 Locally:
 
 ```bash
 python -m pip install -e ".[dev]"
-python -m pytest --disable-socket -q
+python -m pytest --disable-socket --allow-unix-socket -q
 ```
 
 ## License
