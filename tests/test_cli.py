@@ -66,3 +66,21 @@ def test_apply_rejects_out_and_in_place_together() -> None:
     combined = _plain(f"{result.stdout}{result.stderr}")
     assert "--out" in combined and "--in-place" in combined
     assert "not implemented" not in combined.lower()
+
+
+def test_apply_help_documents_write_flags() -> None:
+    result = runner.invoke(app, ["apply", "--help"])
+    assert result.exit_code == 0
+    stdout = _plain(result.stdout)
+    assert "--out" in stdout
+    assert "--in-place" in stdout
+    assert "--dry-run" in stdout
+    assert "--i-mean-it" in stdout
+
+
+def test_apply_in_place_without_confirm_exits_2() -> None:
+    result = runner.invoke(app, ["apply", "job-id", "--in-place"])
+    assert result.exit_code == 2
+    combined = _plain(f"{result.stdout}{result.stderr}").lower()
+    assert "i-mean-it" in combined
+    assert "not implemented" not in combined
