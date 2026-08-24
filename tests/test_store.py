@@ -286,6 +286,8 @@ def test_index_register_lookup_and_resume(data_dir: Path) -> None:
             touched = await index.get("job-a")
             assert touched is not None
             assert touched["last_ingest_at"] == "2026-08-12T00:00:00Z"
+            listed = await index.list_jobs()
+            assert [row["job_id"] for row in listed] == ["job-a"]
             relocated = await index.relocate("job-a", "/photos/trip-moved")
             assert relocated["root_canonical"] == "/photos/trip-moved"
             assert await index.lookup("/photos/trip", digest) is None

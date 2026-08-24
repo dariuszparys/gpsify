@@ -1,8 +1,9 @@
-"""Typer CLI. ``status`` / ``clean`` stay stubs until PR 9."""
+"""Typer CLI. Status and clean land in this slice (PR 9)."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import webbrowser
 from pathlib import Path
@@ -17,6 +18,7 @@ from gpsify.geocode import GeocodeConfigError, require_geocoder_ready
 from gpsify.ingest import IngestError, run_ingest
 from gpsify.propose import ProposeError, run_propose
 from gpsify.review import REVIEW_HOST, ReviewError, create_app, list_low_rank_photos, serve_review
+from gpsify.status import StatusError, format_job_list, format_status, job_status, list_job_entries, run_clean
 from gpsify.store import DecisionError, JobRepo, StoreError
 from gpsify.types import DecisionAction
 from gpsify.undo import UndoError, run_undo
@@ -30,14 +32,6 @@ app = typer.Typer(
     no_args_is_help=True,
     pretty_exceptions_enable=False,
 )
-
-
-def _not_implemented(command: str) -> None:
-    typer.echo(
-        f"gpsify {command} is not implemented yet. See docs/design.md (PR plan).",
-        err=True,
-    )
-    raise typer.Exit(code=2)
 
 
 def _version_callback(value: bool) -> None:
@@ -353,7 +347,26 @@ def status(
     json_output: bool = typer.Option(False, "--json", help="Machine-readable rollup."),
 ) -> None:
     """Print job counts, dest root, and cost counters."""
-    _not_implemented("status")
+    settings = load_settings()
+    try:
+        if job_id is None:
+            entries = asyncio.run(list_job_entries(settings.data_dir))
+            if json_output:
+                payload = {"jobs": [entry.to_json() for entry in entries]}
+                typer.echo(json.dumps(payload, sort_keys=True))
+            else:
+                typer.echo(format_job_list(entries))
+            return
+        rollup = asyncio.run(job_status(settings.data_dir, job_id))
+    except (StatusError, StoreError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    if json_output:
+        typer.echo(json.dumps(rollup.to_json(), sort_keys=True))
+    else:
+        typer.echo(format_status(rollup))
+    for warning in rollup.warnings:
+        typer.echo(f"warning: {warning}", err=True)
 
 
 @app.command()
@@ -361,7 +374,22 @@ def clean(
     job_id: str = typer.Argument(..., help="Job UUID from ingest."),
 ) -> None:
     """Delete previews and thumbs; keep sqlite and backups."""
-    _not_implemented("clean")
+    settings = load_settings()
+    try:
+        summary = asyncio.run(run_clean(settings.data_dir, job_id))
+    except (StatusError, StoreError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    deleted: list[str] = []
+    if summary.deleted_previews:
+        deleted.append("previews")
+    if summary.deleted_thumbs:
+        deleted.append("thumbs")
+    if deleted:
+        typer.echo(f"deleted {' and '.join(deleted)}")
+    else:
+        typer.echo("nothing to clean")
+    typer.echo("kept sqlite and backups")
 
 
 def main() -> None:
