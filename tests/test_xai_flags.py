@@ -9,7 +9,12 @@ from typing import Any, TypeVar
 import pytest
 from pydantic import ValidationError
 
-from gpsify.providers.base import VisionContractError, assert_safe_vision_options
+from gpsify.providers.base import (
+    VisionBlockedError,
+    VisionContractError,
+    VisionParseError,
+    assert_safe_vision_options,
+)
 from gpsify.providers.xai_grok import (
     PROMPT_V1,
     XaiGrokProvider,
@@ -176,3 +181,16 @@ def test_parse_vision_guess_from_chat_completion() -> None:
     payload = {"choices": [{"message": {"content": guess.model_dump_json()}}]}
     parsed = parse_vision_guess(payload)
     assert parsed.primary_place_name == guess.primary_place_name
+
+
+def test_xai_refusal_is_a_terminal_block() -> None:
+    """A content-policy refusal is ``refused``, not a retry-eligible ``error``."""
+    payload = {"choices": [{"message": {"refusal": "image_geolocation"}}]}
+    with pytest.raises(VisionBlockedError, match="content policy"):
+        parse_vision_guess(payload)
+
+
+def test_xai_empty_content_is_not_a_block() -> None:
+    with pytest.raises(VisionParseError) as caught:
+        parse_vision_guess({"choices": [{"message": {"content": "  "}}]})
+    assert not isinstance(caught.value, VisionBlockedError)

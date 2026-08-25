@@ -19,7 +19,12 @@ import pytest
 from gpsify.config import DEFAULT_GEMINI_MODEL, load_settings
 from gpsify.ingest import run_ingest
 from gpsify.propose import ProposeError, estimate_usd, run_propose
-from gpsify.providers.base import VisionContractError, VisionError, VisionParseError
+from gpsify.providers.base import (
+    VisionBlockedError,
+    VisionContractError,
+    VisionError,
+    VisionParseError,
+)
 from gpsify.providers.gemini import (
     GEMINI_DEFAULT_MODEL,
     MAX_INLINE_IMAGE_BYTES,
@@ -276,6 +281,27 @@ def test_parse_vision_guess_reads_the_answer_and_skips_thought_parts() -> None:
 def test_parse_vision_guess_rejects_bad_bodies(body: dict[str, Any], message: str) -> None:
     with pytest.raises(VisionParseError, match=message):
         parse_vision_guess(body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"promptFeedback": {"blockReason": "SAFETY"}},
+        {"candidates": [{"finishReason": "PROHIBITED_CONTENT"}]},
+        {"candidates": [{"finishReason": "BLOCKLIST"}]},
+    ],
+)
+def test_safety_blocks_raise_the_terminal_subclass(body: dict[str, Any]) -> None:
+    """A blocked image is ``refused``, not ``error``: propose must not re-send it."""
+    with pytest.raises(VisionBlockedError):
+        parse_vision_guess(body)
+
+
+def test_an_empty_body_is_not_a_safety_block() -> None:
+    """``MAX_TOKENS`` and empty parses stay retry-eligible ``error``."""
+    with pytest.raises(VisionParseError) as caught:
+        parse_vision_guess({"candidates": [{"finishReason": "MAX_TOKENS"}]})
+    assert not isinstance(caught.value, VisionBlockedError)
 
 
 def test_parse_usage_maps_gemini_metadata_onto_usage() -> None:

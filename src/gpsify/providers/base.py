@@ -18,7 +18,16 @@ class VisionContractError(VisionError):
 
 
 class VisionParseError(VisionError):
-    """HTTP succeeded but the body was empty, unparsable, or policy-blocked."""
+    """HTTP succeeded but the body was empty or unparsable."""
+
+
+class VisionBlockedError(VisionParseError):
+    """The provider's safety filter blocked this image. Terminal, not an error.
+
+    Re-sending the same pixels is billed and blocked again, so ``propose`` maps
+    this to ``refused`` / ``policy_refusal`` (design.md failure table) rather
+    than ``error``, keeping the photo out of the retry-eligible set.
+    """
 
 
 class VisionRetryableError(VisionError):
@@ -72,6 +81,7 @@ class FakeVisionProvider:
         default_factory=list
     )
     error_on: set[str] = field(default_factory=set)
+    blocked_on: set[str] = field(default_factory=set)
     retryable_failures_remaining: int = 0
     usage: Usage = field(default_factory=lambda: Usage(input_tokens=100, output_tokens=50, reasoning_tokens=10))
 
@@ -86,6 +96,8 @@ class FakeVisionProvider:
         if self.retryable_failures_remaining > 0:
             self.retryable_failures_remaining -= 1
             raise VisionRetryableError("fake 503")
+        if context.filename in self.blocked_on:
+            raise VisionBlockedError("content policy: FAKE_BLOCK")
         if context.filename in self.error_on:
             raise VisionError(f"fake vision error for {context.filename!r}")
         if self.factory is not None:

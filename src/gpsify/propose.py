@@ -41,6 +41,7 @@ from gpsify.geocode.nominatim import NominatimGeocoder
 from gpsify.media import MediaError, ensure_preview
 from gpsify.providers import (
     GeminiProvider,
+    VisionBlockedError,
     VisionError,
     VisionProvider,
     VisionRetryableError,
@@ -269,6 +270,26 @@ def ui_rank(
         + 0.15 * clip01(clue_score(guess))
         + 0.10 * clip01(geocode_score(result))
         + 0.10 * clip01(cluster_score(guess, proposed_siblings, gps_siblings))
+    )
+
+
+def _blocked_guess(detail: str) -> VisionGuess:
+    """Synthesize the guess a safety-blocked call never returned.
+
+    The provider sends no body worth storing, but every reader of
+    ``proposal.raw_json`` parses it as a ``VisionGuess`` (the review UI
+    included), so the block is recorded in the vocabulary the rest of the app
+    already speaks: ``policy_refusal`` plus the provider message as the detail.
+    """
+    return VisionGuess(
+        refusal=RefusalReason.policy_refusal,
+        refusal_detail=detail,
+        granularity=Granularity.unknown,
+        model_confidence=0.0,
+        clues=[],
+        candidates=[],
+        used_album_hint=False,
+        used_filename_hint=False,
     )
 
 
@@ -682,6 +703,69 @@ async def _process_one(
         guess, usage = await _guess_with_retries(
             vision, image_jpeg, context, options, sleep=sleep
         )
+    except VisionBlockedError as exc:
+        # The provider's safety filter blocked these pixels. Terminal: a re-send
+        # is billed and blocked identically, so this is a refusal (design.md
+        # failure table), not ``error`` — which propose retries by default.
+        # The wrapper raises before parsing usage, so a blocked call is missing
+        # from est_usd by its prompt tokens.
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        latencies.append(float(latency_ms))
+        blocked = _blocked_guess(str(exc))
+        async with write_lock:
+            await repo.insert_proposal(
+                photo_id=photo_id,
+                provider=vision.name,
+                model=vision.model,
+                prompt_version=PROMPT_VERSION,
+                raw_json=blocked.model_dump_json(),
+                place_name=None,
+                granularity=blocked.granularity.value,
+                model_confidence=blocked.model_confidence,
+                ui_rank=0.0,
+                refusal=blocked.refusal.value,
+                pin_lat=None,
+                pin_lng=None,
+                pin_source=PinSource.none,
+                model_agree=None,
+                geocode_json=json.dumps({"skipped_geocode": "refusal"}),
+                input_tokens=0,
+                output_tokens=0,
+                reasoning_tokens=0,
+                latency_ms=latency_ms,
+                current=True,
+            )
+            await repo.set_photo_status(photo_id, PhotoStatus.refused, error=str(exc))
+            current_by_photo[photo_id] = {
+                "photo_id": photo_id,
+                "place_name": None,
+                "granularity": blocked.granularity.value,
+                "model_confidence": blocked.model_confidence,
+                "country_code": None,
+            }
+            photo["status"] = PhotoStatus.refused.value
+        summary.refused += 1
+        refusal_hist[blocked.refusal.value] = (
+            refusal_hist.get(blocked.refusal.value, 0) + 1
+        )
+        _log_event(
+            log_handle,
+            {
+                "level": "warning",
+                "photo_id": photo_id,
+                "event": "vision_blocked",
+                "ms": latency_ms,
+                "error": str(exc),
+                "status": PhotoStatus.refused.value,
+            },
+        )
+        _emit(
+            progress,
+            f"{summary.proposed}/{summary.planned} proposed, "
+            f"{summary.refused} refused, {summary.error} error, "
+            f"~${summary.est_usd:.2f} est (incl. reasoning_tokens)",
+        )
+        return
     except VisionError as exc:
         latency_ms = int((time.perf_counter() - started) * 1000)
         async with write_lock:

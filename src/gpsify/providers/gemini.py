@@ -32,6 +32,7 @@ import httpx
 
 from gpsify.geocode.base import live_http_blocked
 from gpsify.providers.base import (
+    VisionBlockedError,
     VisionContractError,
     VisionError,
     VisionParseError,
@@ -251,7 +252,7 @@ def parse_usage(payload: Mapping[str, Any]) -> Usage:
 def parse_vision_guess(payload: Mapping[str, Any]) -> VisionGuess:
     feedback = payload.get("promptFeedback")
     if isinstance(feedback, Mapping) and feedback.get("blockReason"):
-        raise VisionParseError(f"content policy: {feedback['blockReason']}")
+        raise VisionBlockedError(f"content policy: {feedback['blockReason']}")
     candidates = payload.get("candidates")
     if not isinstance(candidates, list) or not candidates:
         raise VisionParseError("empty parse: no candidates")
@@ -260,7 +261,7 @@ def parse_vision_guess(payload: Mapping[str, Any]) -> VisionGuess:
         raise VisionParseError("empty parse: no candidate object")
     finish = candidate.get("finishReason")
     if isinstance(finish, str) and finish in _BLOCKED_FINISH_REASONS:
-        raise VisionParseError(f"content policy: {finish}")
+        raise VisionBlockedError(f"content policy: {finish}")
     if finish == "MAX_TOKENS":
         raise VisionParseError(
             "empty parse: hit MAX_TOKENS (thinking budget may have eaten the response)"

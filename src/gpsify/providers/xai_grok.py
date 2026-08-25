@@ -17,6 +17,7 @@ import httpx
 
 from gpsify.geocode.base import live_http_blocked
 from gpsify.providers.base import (
+    VisionBlockedError,
     VisionContractError,
     VisionError,
     VisionParseError,
@@ -187,7 +188,7 @@ def parse_vision_guess(payload: Mapping[str, Any]) -> VisionGuess:
         raise VisionParseError("empty parse: no message")
     refusal = message.get("refusal")
     if refusal:
-        raise VisionParseError(f"content policy: {refusal}")
+        raise VisionBlockedError(f"content policy: {refusal}")
     content = message.get("content")
     if not isinstance(content, str) or not content.strip():
         raise VisionParseError("empty parse: no content")

@@ -615,6 +615,98 @@ def test_retryable_exhausted_marks_error(tmp_path: Path, data_dir: Path) -> None
     run(inspect())
 
 
+def test_content_block_is_refused_not_error(tmp_path: Path, data_dir: Path) -> None:
+    """A safety block is terminal, so it lands in ``refused``/``policy_refusal``."""
+    folder = tmp_path / "album"
+    ingested = _ingest_plain(folder, data_dir)
+    vision = FakeVisionProvider(guess_result=_guess(), blocked_on={"plain.jpg"})
+    geocoder = FakeGeocoder()
+    summary = run(
+        run_propose(
+            ingested.job_id,
+            settings=_settings(data_dir),
+            vision=vision,
+            geocoder=geocoder,
+            concurrency=1,
+            sleep=_noop_sleep,
+        )
+    )
+    assert (summary.refused, summary.error) == (1, 0)
+    assert len(vision.calls) == 1
+    assert geocoder.queries == []
+
+    async def inspect() -> None:
+        async with await JobRepo.open(data_dir, ingested.job_id) as repo:
+            photo = (await repo.list_photos())[0]
+            assert photo["status"] == PhotoStatus.refused.value
+            assert "FAKE_BLOCK" in str(photo["error"])
+            proposal = await repo.get_current_proposal(photo["id"])
+            assert proposal is not None
+            assert proposal["refusal"] == RefusalReason.policy_refusal.value
+            assert proposal["pin_source"] == PinSource.none.value
+            assert (proposal["pin_lat"], proposal["pin_lng"]) == (None, None)
+            assert proposal["input_tokens"] == 0
+            guess = VisionGuess.model_validate_json(str(proposal["raw_json"]))
+            assert guess.refusal is RefusalReason.policy_refusal
+            assert "FAKE_BLOCK" in str(guess.refusal_detail)
+            job = await repo.get_job()
+            stats = json.loads(str(job["stats_json"]))["propose"]
+            assert stats["refusal_histogram"]["policy_refusal"] == 1
+
+    run(inspect())
+
+
+def test_blocked_photo_is_not_re_sent_without_force(
+    tmp_path: Path, data_dir: Path
+) -> None:
+    """The whole point: a second propose must not re-bill a call that cannot succeed."""
+    folder = tmp_path / "album"
+    ingested = _ingest_plain(folder, data_dir)
+    vision = FakeVisionProvider(guess_result=_guess(), blocked_on={"plain.jpg"})
+    kwargs: dict[str, Any] = {
+        "settings": _settings(data_dir),
+        "vision": vision,
+        "geocoder": FakeGeocoder(),
+        "concurrency": 1,
+        "sleep": _noop_sleep,
+    }
+    run(run_propose(ingested.job_id, **kwargs))
+    assert len(vision.calls) == 1
+
+    again = run(run_propose(ingested.job_id, **kwargs))
+    assert again.planned == 0
+    assert len(vision.calls) == 1
+
+    forced = run(run_propose(ingested.job_id, force=True, **kwargs))
+    assert forced.planned == 1
+    assert len(vision.calls) == 2
+
+
+def test_empty_parse_stays_error(tmp_path: Path, data_dir: Path) -> None:
+    """Only safety blocks are terminal; a plain vision error still retries."""
+    folder = tmp_path / "album"
+    ingested = _ingest_plain(folder, data_dir)
+    vision = FakeVisionProvider(guess_result=_guess(), error_on={"plain.jpg"})
+    summary = run(
+        run_propose(
+            ingested.job_id,
+            settings=_settings(data_dir),
+            vision=vision,
+            geocoder=FakeGeocoder(),
+            concurrency=1,
+            sleep=_noop_sleep,
+        )
+    )
+    assert (summary.error, summary.refused) == (1, 0)
+
+    async def inspect() -> None:
+        async with await JobRepo.open(data_dir, ingested.job_id) as repo:
+            photo = (await repo.list_photos())[0]
+            assert photo["status"] == PhotoStatus.error.value
+
+    run(inspect())
+
+
 def test_missing_api_key_exits_2(tmp_path: Path, data_dir: Path) -> None:
     folder = tmp_path / "album"
     ingested = _ingest_plain(folder, data_dir)

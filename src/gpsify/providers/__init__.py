@@ -2,6 +2,7 @@
 
 from gpsify.providers.base import (
     FakeVisionProvider,
+    VisionBlockedError,
     VisionContractError,
     VisionError,
     VisionParseError,
@@ -34,6 +35,7 @@ __all__ = [
     "XAI_BASE_URL",
     "GeminiProvider",
     "FakeVisionProvider",
+    "VisionBlockedError",
     "VisionContractError",
     "VisionError",
     "VisionParseError",

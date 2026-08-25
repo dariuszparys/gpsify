@@ -766,6 +766,7 @@ ui_rank = clip01(
 - `granularity in {unknown, country}` **and** no sign/text clue **and** no album hint that names a city
 - `ui_rank < 0.25`
 - vision hard-error after retries (status `error`, not a fake pin)
+- the provider's **safety filter blocked the image** (status `refused`, `refusal=policy_refusal`, no pin)
 
 Low (`0.25–0.55`) still shows a pin if geocode hit; the badge is amber. High (`≥ 0.80`) is still **not** auto-written.
 
@@ -1065,7 +1066,8 @@ JSON exports (`gpsify status --json`) are derived. SQLite is the source of truth
 | Missing `XAI_API_KEY` | `propose` exits 2 before any work |
 | Missing `nominatim_contact` (public Nominatim) | `propose` / `review` exit 2 |
 | xAI 429 / 5xx / timeout | retry 3× (2s/8s/30s) then `error`; batch continues |
-| xAI content policy / empty parse | `refused` / `error`; no pin |
+| Provider content policy (xAI `refusal`, Gemini `blockReason` / blocked `finishReason`) | `refused` with `refusal=policy_refusal`; no pin; terminal, so only `--force` re-sends it |
+| Empty / unparsable body | `error`; retry-eligible on the next `propose` |
 | Public Nominatim would exceed uncached cap | stop further public lookups; `pin_source=none` |
 | Nominatim 429 / timeout | backoff; use cache; else `pin_source=none` |
 | House-address / privacy_sensitive | never geocode |
@@ -1300,6 +1302,8 @@ Print a table, accept via CLI, open maps in the system browser per photo.
 ### Provider policy
 
 Some model providers restrict precise geolocation of private individuals. gpsify's prompt, refusal enum, and marketing stay on **landmarks and travel**. If the model returns `policy_refusal`, surface it honestly and do not geocode.
+
+A provider may also block a photo from its own side rather than answering (xAI `message.refusal`, Gemini `promptFeedback.blockReason` or a blocked `finishReason`). That is terminal: the same pixels are billed and blocked again on every retry. The wrappers raise `VisionBlockedError` (a `VisionParseError`, so it never enters the retry loop) and `propose` records it as `refused` with `refusal=policy_refusal`, the provider's message in `refusal_detail`, and no pin — which keeps the photo out of the retry-eligible `{pending, error}` set that a later `propose` re-sends. A synthesized `VisionGuess` is stored in `raw_json` because every reader of that column parses it as one; it is the only proposal row not transcribed from a provider body.
 
 ---
 
