@@ -256,7 +256,10 @@ Stock HTTP-library UAs are forbidden.
 
 ```text
 gpsify ingest <folder> [--hint "weekend in Porto"] [--recursive] [--relocate JOB_ID]
-       → prints job_id, counts (tagged / untagged / skipped / missing / clusters)
+       → prints job_id, counts (total / tagged / untagged / skipped / missing / clusters)
+       → plus an `other:` line for any status the four buckets do not cover
+         (a resumed job's proposed / refused / written photos), so a re-ingest
+         of finished work never reports all zeros
 
 gpsify propose <job_id> [--limit N] [--concurrency 3] [--dry-run] [--force]
                      [--no-context] [--provider xai|gemini]
@@ -473,7 +476,7 @@ Cluster states are derived: `open` while any member is `pending`/`proposed`; `re
    - Capture `DateTimeOriginal` (fallback `CreateDate` only; **do not** fall back to file mtime for clustering — mtime is stored but is not a capture time).
    - Capture `Make`, `Model`, `OffsetTimeOriginal`, `GPSImgDirection`, `GPSAltitude`, `Orientation`.
 6. Build clusters (see below).
-7. Upsert per [re-ingest rules](#re-ingest-rules). Persist and print a summary.
+7. Upsert per [re-ingest rules](#re-ingest-rules). Persist and print a summary. The summary **accounts for every photo row**: `total` is the whole job, and any status outside the tagged / untagged / skipped / missing buckets is listed on the `other:` line. Re-ingesting a job whose photos are already `proposed` must not print four zeros.
 
 Already-tagged files stay in the job as `skipped_has_gps` so the review UI can draw them as ground-truth pins on the cluster map.
 
@@ -1024,7 +1027,9 @@ CREATE TABLE write_receipt (
 
 Global index: `~/.gpsify/gpsify.sqlite` as specified under [Job identity](#job-identity-k11). It is **required**, not optional.
 
-`job.stats_json` is rewritten at the end of `propose` / `apply` (counts, p50/p95 latency, estimated USD, geocode cache hit rate, refusal histogram).
+`job.stats_json` is merged at the end of `propose` / `apply` (counts, p50/p95 latency, estimated USD, geocode cache hit rate, refusal histogram).
+
+**Spend is cumulative for the life of the job.** `propose` adds this run's counts, tokens, USD, geocode counters, and refusal histogram to the previous totals and bumps `runs`; it never replaces them. A later run — including one that plans nothing because every photo is already `proposed` — must not zero the tokens and dollars an earlier run really spent. The latest invocation is kept on its own under `propose.last_run` (same shape, this run only), and p50/p95 keep the last run that actually made calls. `--dry-run` returns before any stats write.
 
 #### `add_decision` contract
 
@@ -1315,8 +1320,10 @@ Never log base64, file bytes, or full home paths (store `photo_id`; path is alre
 - counts by status
 - p50/p95 vision latency
 - estimated USD from `usage.input_tokens`, `output_tokens`, **`reasoning_tokens`**
-- geocode cache hit rate and uncached public lookups this run
+- geocode cache hit rate and uncached public lookups
 - refusal reasons histogram
+
+Everything above is a **job total** (see [`job.stats_json`](#persistence-schema-sqlite)); `propose.last_run` holds the same fields for the most recent invocation. The printed line is always the current run.
 
 **Alerting:** none. Exit codes: `0` ok, `1` partial (some `error`), `2` config/usage, `3` apply wrote nothing because nothing accepted.
 

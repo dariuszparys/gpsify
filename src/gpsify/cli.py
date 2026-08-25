@@ -69,7 +69,7 @@ def ingest(
         metavar="JOB_ID",
     ),
 ) -> None:
-    """Ingest a folder; print job_id and counts (tagged / untagged / skipped)."""
+    """Ingest a folder; print job_id and counts (total / tagged / untagged / skipped)."""
     settings = load_settings()
     try:
         summary = asyncio.run(
@@ -86,10 +86,12 @@ def ingest(
         raise typer.Exit(code=2) from exc
     typer.echo(summary.job_id)
     typer.echo(
-        f"tagged: {summary.tagged}  untagged: {summary.untagged}  "
-        f"skipped: {summary.skipped}  missing: {summary.missing}  "
-        f"clusters: {summary.clusters}"
+        f"total: {summary.total}  tagged: {summary.tagged}  "
+        f"untagged: {summary.untagged}  skipped: {summary.skipped}  "
+        f"missing: {summary.missing}  clusters: {summary.clusters}"
     )
+    if summary.other:
+        typer.echo("other: " + "  ".join(f"{name}={n}" for name, n in summary.other))
     for warning in summary.warnings:
         typer.echo(f"warning: {warning}", err=True)
 

@@ -8,6 +8,11 @@ and decision; missing paths are marked ``missing``). ``--relocate`` rebinds
 HEIC decode and RAW preview extract live in ``media.py`` (PR 4) and are not
 run here — ingest never writes ``previews/`` or ``thumbs/``. This module never
 writes GPS.
+
+The summary accounts for every photo row: ``total`` covers the whole job and
+any status outside the tagged / untagged / skipped / missing buckets is
+reported in ``other``, so re-ingesting an already-proposed job does not print
+four zeros.
 """
 
 from __future__ import annotations
@@ -40,14 +45,28 @@ class IngestError(Exception):
     """User-facing ingest failure (CLI exit 2)."""
 
 
+SUMMARY_BUCKETS: frozenset[PhotoStatus] = frozenset(
+    {
+        PhotoStatus.skipped_has_gps,
+        PhotoStatus.pending,
+        PhotoStatus.skipped_unsupported,
+        PhotoStatus.skipped_unreadable,
+        PhotoStatus.skipped_no_preview,
+        PhotoStatus.missing,
+    }
+)
+
+
 @dataclass(frozen=True)
 class IngestSummary:
     job_id: str
+    total: int
     tagged: int
     untagged: int
     skipped: int
     missing: int
     clusters: int
+    other: tuple[tuple[str, int], ...]
     warnings: tuple[str, ...]
 
 
@@ -132,6 +151,7 @@ async def run_ingest(
         counts = await repo.count_photos_by_status()
         return IngestSummary(
             job_id=job_id,
+            total=sum(counts.values()),
             tagged=counts.get(PhotoStatus.skipped_has_gps.value, 0),
             untagged=counts.get(PhotoStatus.pending.value, 0),
             skipped=(
@@ -141,6 +161,7 @@ async def run_ingest(
             ),
             missing=counts.get(PhotoStatus.missing.value, 0),
             clusters=cluster_count,
+            other=_other_counts(counts),
             warnings=tuple(warnings),
         )
     except JobConflictError as exc:
@@ -444,6 +465,28 @@ def _classify_status(
             return PhotoStatus.pending, None, False, None, None
         case _:
             _unreachable(item.kind)
+
+
+def _other_counts(counts: dict[str, int]) -> tuple[tuple[str, int], ...]:
+    """Non-zero statuses no summary bucket covers, in ``PhotoStatus`` order.
+
+    A resumed job carries photos that later stages already moved past
+    ``pending`` (``proposed``, ``written``, ...). Without this the four buckets
+    report an all-zero re-ingest of work that is plainly there.
+    """
+    bucketed = {status.value for status in SUMMARY_BUCKETS}
+    all_statuses = {status.value for status in PhotoStatus}
+    known = tuple(
+        (status.value, counts[status.value])
+        for status in PhotoStatus
+        if status.value not in bucketed and counts.get(status.value)
+    )
+    unknown = tuple(
+        (name, count)
+        for name, count in sorted(counts.items())
+        if count and name not in all_statuses
+    )
+    return known + unknown
 
 
 async def _rebuild_clusters(repo: JobRepo) -> int:

@@ -75,6 +75,8 @@ def test_ingest_classifies_gps_and_plain_jpegs(tmp_path: Path, data_dir: Path) -
     write_test_jpeg(hidden)
 
     summary = run(run_ingest(folder, hint="weekend in Porto", data_dir=data_dir))
+    assert summary.total == 4
+    assert summary.other == ()
     assert summary.tagged == 1
     assert summary.untagged == 1
     assert summary.skipped == 2  # txt + mov
@@ -118,6 +120,44 @@ def test_ingest_resumes_same_key_and_hint_does_not_fork(
             assert job["options_hash"] == options_hash(recursive=False)
 
     run(inspect())
+
+
+def test_reingest_reports_statuses_past_pending(
+    tmp_path: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GPSIFY_DATA_DIR", str(data_dir))
+    folder = tmp_path / "album"
+    folder.mkdir()
+    write_test_jpeg(folder / "a.jpg", datetime_original="2019:06:14 18:00:00")
+    write_test_jpeg(folder / "b.jpg", datetime_original="2019:06:14 18:02:00")
+    first = run(run_ingest(folder, data_dir=data_dir))
+    assert first.total == 2
+    assert first.untagged == 2
+    assert first.other == ()
+
+    async def advance() -> None:
+        async with await JobRepo.open(data_dir, first.job_id) as repo:
+            photos = sorted(await repo.list_photos(), key=lambda row: row["relpath"])
+            await repo.set_photo_status(photos[0]["id"], PhotoStatus.proposed)
+            await repo.set_photo_status(photos[1]["id"], PhotoStatus.refused)
+
+    run(advance())
+
+    second = run(run_ingest(folder, data_dir=data_dir))
+    assert second.job_id == first.job_id
+    assert second.total == 2
+    assert second.untagged == 0
+    assert second.tagged == 0
+    assert second.skipped == 0
+    assert second.missing == 0
+    assert second.other == (("proposed", 1), ("refused", 1))
+
+    result = runner.invoke(app, ["ingest", str(folder)])
+    assert result.exit_code == 0, result.output
+    stdout = _plain(result.stdout)
+    assert "total: 2" in stdout
+    assert "untagged: 0" in stdout
+    assert "other: proposed=1  refused=1" in stdout
 
 
 def test_reingest_marks_missing_and_sha256_reset(
@@ -304,8 +344,10 @@ def test_cli_ingest_prints_job_id(
     lines = [line for line in stdout.splitlines() if line.strip()]
     job_id = lines[0].strip()
     assert len(job_id) == 36
+    assert "total: 1" in stdout
     assert "tagged:" in stdout
     assert "untagged: 1" in stdout
+    assert "other:" not in stdout
     assert "clusters:" in stdout
 
 

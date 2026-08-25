@@ -280,6 +280,72 @@ def test_propose_writes_proposal_not_gps(tmp_path: Path, data_dir: Path) -> None
     assert any(preview.glob("*.jpg"))
 
 
+def test_propose_stats_accumulate_and_survive_a_noop_run(
+    tmp_path: Path, data_dir: Path
+) -> None:
+    folder = tmp_path / "album"
+    ingested = _ingest_plain(folder, data_dir)
+    vision = FakeVisionProvider(guess_result=_guess())
+    geocoder = FakeGeocoder()
+    geocoder.add(PORTO, _porto_hit())
+
+    def propose(**overrides: Any) -> Any:
+        return run(
+            run_propose(
+                ingested.job_id,
+                settings=_settings(data_dir),
+                vision=vision,
+                geocoder=geocoder,
+                concurrency=1,
+                sleep=_noop_sleep,
+                **overrides,
+            )
+        )
+
+    def stats() -> dict[str, Any]:
+        async def read() -> dict[str, Any]:
+            async with await JobRepo.open(data_dir, ingested.job_id) as repo:
+                job = await repo.get_job()
+                assert job is not None
+                block = json.loads(job["stats_json"])["propose"]
+                assert isinstance(block, dict)
+                return block
+
+        return run(read())
+
+    first = propose()
+    assert first.proposed == 1
+    spent = stats()
+    assert spent["reasoning_tokens"] == 10
+    assert spent["est_usd"] > 0
+    assert spent["runs"] == 1
+
+    # Nothing left to propose: the run must not zero what the first one spent.
+    noop = propose()
+    assert noop.planned == 0
+    after_noop = stats()
+    assert after_noop["input_tokens"] == spent["input_tokens"]
+    assert after_noop["reasoning_tokens"] == spent["reasoning_tokens"]
+    assert after_noop["est_usd"] == spent["est_usd"]
+    assert after_noop["latency_ms_p50"] == spent["latency_ms_p50"]
+    assert after_noop["counts"]["proposed"] == 1
+    assert after_noop["runs"] == 2
+    assert after_noop["last_run"]["counts"]["planned"] == 0
+    assert after_noop["last_run"]["reasoning_tokens"] == 0
+    assert after_noop["last_run"]["latency_ms_p50"] is None
+
+    # A second run that really spends adds to the total instead of replacing it.
+    forced = propose(force=True)
+    assert forced.proposed == 1
+    after_force = stats()
+    assert after_force["reasoning_tokens"] == 2 * spent["reasoning_tokens"]
+    assert after_force["est_usd"] == pytest.approx(2 * spent["est_usd"])
+    assert after_force["counts"]["proposed"] == 2
+    assert after_force["last_run"]["counts"]["proposed"] == 1
+    assert after_force["last_run"]["est_usd"] == pytest.approx(spent["est_usd"])
+    assert after_force["runs"] == 3
+
+
 def test_privacy_sensitive_never_geocodes(tmp_path: Path, data_dir: Path) -> None:
     folder = tmp_path / "album"
     ingested = _ingest_plain(folder, data_dir)

@@ -3,6 +3,11 @@
 On start: crash-repair ``proposing`` → ``pending``, take ``jobs/<id>/propose.lock``.
 Lazy previews, xAI (or a fake provider in tests), primary-only geocode, UI rank,
 proposal rows. ``--dry-run`` is network-free (planned calls; cache reads allowed).
+
+``job.stats_json`` is merged, never replaced: spend (counts, tokens, USD,
+geocode counters, refusal histogram) is cumulative for the life of the job, so a
+run that plans nothing cannot zero what an earlier run really spent. This run
+alone is kept under ``propose.last_run``.
 """
 
 from __future__ import annotations
@@ -12,7 +17,7 @@ import json
 import os
 import statistics
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -879,6 +884,56 @@ def _cluster_context(
     return proposed[:8], gps[:4]
 
 
+def _prior_stats(job: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return ``(whole stats dict, prior propose block)`` from ``job.stats_json``."""
+    existing: dict[str, Any] = {}
+    if job is not None and job["stats_json"]:
+        try:
+            loaded = json.loads(job["stats_json"])
+            if isinstance(loaded, dict):
+                existing = loaded
+        except json.JSONDecodeError:
+            existing = {}
+    prior = existing.get("propose")
+    return existing, prior if isinstance(prior, dict) else {}
+
+
+def _prior_number(prior: Mapping[str, Any], key: str) -> float:
+    """Previous total, or 0.0 when absent, null, or not a number."""
+    value = prior.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return float(value)
+
+
+def _prior_optional_number(prior: Mapping[str, Any], key: str) -> float | None:
+    """Previous latency percentile, or None when absent, null, or not a number."""
+    value = prior.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _prior_mapping(prior: Mapping[str, Any], key: str) -> dict[str, Any]:
+    value = prior.get(key)
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _latency_percentiles(
+    latencies: Sequence[float],
+) -> tuple[float | None, float | None]:
+    if not latencies:
+        return None, None
+    ordered = sorted(latencies)
+    idx = min(len(ordered) - 1, int(round(0.95 * (len(ordered) - 1))))
+    return statistics.median(latencies), ordered[idx]
+
+
+def _hit_rate(cache_hits: float, uncached: float) -> float | None:
+    lookups = cache_hits + uncached
+    return (cache_hits / lookups) if lookups else None
+
+
 async def _write_stats(
     repo: JobRepo,
     *,
@@ -888,41 +943,64 @@ async def _write_stats(
     cache_hits: int,
     uncached: int,
 ) -> None:
-    job = await repo.get_job()
-    existing: dict[str, Any] = {}
-    if job is not None and job["stats_json"]:
-        try:
-            loaded = json.loads(job["stats_json"])
-            if isinstance(loaded, dict):
-                existing = loaded
-        except json.JSONDecodeError:
-            existing = {}
-    p50 = statistics.median(latencies) if latencies else None
-    p95 = None
-    if latencies:
-        ordered = sorted(latencies)
-        idx = min(len(ordered) - 1, int(round(0.95 * (len(ordered) - 1))))
-        p95 = ordered[idx]
-    lookups = cache_hits + uncached
-    hit_rate = (cache_hits / lookups) if lookups else None
+    """Merge this run into ``job.stats_json``.
+
+    Spend is cumulative for the life of the job: a later run (including one
+    that plans nothing) must never zero the tokens and USD an earlier run
+    really spent. ``last_run`` carries this invocation on its own.
+    """
+    existing, prior = _prior_stats(await repo.get_job())
+    p50, p95 = _latency_percentiles(latencies)
+    run_counts = {
+        "planned": summary.planned,
+        "proposed": summary.proposed,
+        "refused": summary.refused,
+        "error": summary.error,
+        "skipped_no_preview": summary.skipped_no_preview,
+    }
+    prior_counts = _prior_mapping(prior, "counts")
+    prior_hist = _prior_mapping(prior, "refusal_histogram")
+    total_cache_hits = int(_prior_number(prior, "geocode_cache_hits")) + cache_hits
+    total_uncached = int(_prior_number(prior, "geocode_uncached")) + uncached
+    total_hist = {
+        key: int(_prior_number(prior_hist, key)) + refusal_hist.get(key, 0)
+        for key in (*prior_hist, *refusal_hist)
+    }
     existing["propose"] = {
         "counts": {
-            "planned": summary.planned,
-            "proposed": summary.proposed,
-            "refused": summary.refused,
-            "error": summary.error,
-            "skipped_no_preview": summary.skipped_no_preview,
+            key: int(_prior_number(prior_counts, key)) + value
+            for key, value in run_counts.items()
         },
-        "latency_ms_p50": p50,
-        "latency_ms_p95": p95,
-        "est_usd": round(summary.est_usd, 6),
-        "geocode_cache_hits": cache_hits,
-        "geocode_uncached": uncached,
-        "geocode_cache_hit_rate": hit_rate,
-        "refusal_histogram": refusal_hist,
-        "input_tokens": summary.input_tokens,
-        "output_tokens": summary.output_tokens,
-        "reasoning_tokens": summary.reasoning_tokens,
+        "latency_ms_p50": (
+            p50 if p50 is not None else _prior_optional_number(prior, "latency_ms_p50")
+        ),
+        "latency_ms_p95": (
+            p95 if p95 is not None else _prior_optional_number(prior, "latency_ms_p95")
+        ),
+        "est_usd": round(_prior_number(prior, "est_usd") + summary.est_usd, 6),
+        "geocode_cache_hits": total_cache_hits,
+        "geocode_uncached": total_uncached,
+        "geocode_cache_hit_rate": _hit_rate(total_cache_hits, total_uncached),
+        "refusal_histogram": total_hist,
+        "input_tokens": int(_prior_number(prior, "input_tokens")) + summary.input_tokens,
+        "output_tokens": int(_prior_number(prior, "output_tokens")) + summary.output_tokens,
+        "reasoning_tokens": (
+            int(_prior_number(prior, "reasoning_tokens")) + summary.reasoning_tokens
+        ),
+        "runs": int(_prior_number(prior, "runs")) + 1,
+        "last_run": {
+            "counts": run_counts,
+            "latency_ms_p50": p50,
+            "latency_ms_p95": p95,
+            "est_usd": round(summary.est_usd, 6),
+            "geocode_cache_hits": cache_hits,
+            "geocode_uncached": uncached,
+            "geocode_cache_hit_rate": _hit_rate(cache_hits, uncached),
+            "refusal_histogram": dict(refusal_hist),
+            "input_tokens": summary.input_tokens,
+            "output_tokens": summary.output_tokens,
+            "reasoning_tokens": summary.reasoning_tokens,
+        },
     }
     await repo.set_stats_json(json.dumps(existing))
 
