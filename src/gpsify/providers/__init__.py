@@ -1,4 +1,4 @@
-"""Vision providers. v1 ships xAI grok-4.6 only; Gemini is post-v1 (PR 10)."""
+"""Vision providers. v1 default is xAI grok-4.6; Gemini is the post-v1 second provider (PR 10)."""
 
 from gpsify.providers.base import (
     FakeVisionProvider,
@@ -8,6 +8,14 @@ from gpsify.providers.base import (
     VisionProvider,
     VisionRetryableError,
     assert_safe_vision_options,
+)
+from gpsify.providers.gemini import (
+    GEMINI_BASE_URL,
+    GEMINI_DEFAULT_MODEL,
+    GeminiProvider,
+    assert_safe_gemini_payload,
+    build_gemini_request,
+    to_gemini_schema,
 )
 from gpsify.providers.xai_grok import (
     PROMPT_VERSION,
@@ -19,9 +27,12 @@ from gpsify.providers.xai_grok import (
 )
 
 __all__ = [
+    "GEMINI_BASE_URL",
+    "GEMINI_DEFAULT_MODEL",
     "PROMPT_V1",
     "PROMPT_VERSION",
     "XAI_BASE_URL",
+    "GeminiProvider",
     "FakeVisionProvider",
     "VisionContractError",
     "VisionError",
@@ -29,7 +40,10 @@ __all__ = [
     "VisionProvider",
     "VisionRetryableError",
     "XaiGrokProvider",
+    "assert_safe_gemini_payload",
     "assert_safe_vision_options",
+    "build_gemini_request",
     "build_xai_request",
     "format_user_message",
+    "to_gemini_schema",
 ]

@@ -106,7 +106,11 @@ def propose(
         "--no-context",
         help="Pixels only: strip hint, folder, filename, and siblings.",
     ),
-    provider: str = typer.Option("xai", "--provider", help="Vision provider. v1 is xai only."),
+    provider: str | None = typer.Option(
+        None,
+        "--provider",
+        help="Vision provider: xai | gemini. Defaults to GPSIFY_VISION_PROVIDER.",
+    ),
     geocode_uncached_max: int = typer.Option(
         50,
         "--geocode-uncached-max",

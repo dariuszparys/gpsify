@@ -31,6 +31,8 @@ Dependencies: add with `uv add` (`uv add --group dev` for tooling), never by han
 
 Exercise the CLI without touching real data: `GPSIFY_DATA_DIR=/tmp/scratch uv run gpsify ingest <folder>`.
 
+`scripts/bakeoff.py` scores models against an album of already-geotagged photos (their EXIF GPS is the answer key) and prints Acc@km, median error, real token usage, and real USD. It spends money on live API calls, so it is never part of the suite; `tests/test_bakeoff.py` covers its scoring math only.
+
 Exit codes: `0` ok · `1` partial (some photos errored/failed) · `2` config or usage error · `3` `apply` wrote nothing because nothing was accepted.
 
 ## Pipeline
@@ -39,7 +41,7 @@ Exit codes: `0` ok · `1` partial (some photos errored/failed) · `2` config or 
 ingest → propose → review (or decide) → apply → undo
 ```
 
-`ingest` walks and classifies a folder, hashes every file, reads EXIF in batched `exiftool` calls, and builds time+folder clusters. `propose` sends a lazily built 1280px preview to xAI, geocodes the returned *place name*, reconciles the two coordinate sources, and writes a `proposal` row. `review`/`decide` write a `decision` row. `apply` writes GPS from that decision. `undo` reverses it from a full-file backup.
+`ingest` walks and classifies a folder, hashes every file, reads EXIF in batched `exiftool` calls, and builds time+folder clusters. `propose` sends a lazily built 1280px preview to the selected vision provider (`--provider xai|gemini`), geocodes the returned *place name*, reconciles the two coordinate sources, and writes a `proposal` row. `review`/`decide` write a `decision` row. `apply` writes GPS from that decision. `undo` reverses it from a full-file backup.
 
 Modules map one-to-one onto those stages (`ingest.py`, `propose.py`, `apply.py`, `undo.py`, `status.py`), with `media.py` (decode/transpose/resize), `exif.py` (all `exiftool` read and write), `cluster.py`, `reconcile.py`, plus the `providers/`, `geocode/`, `store/`, and `review/` packages.
 
@@ -54,7 +56,9 @@ These are safety rails, each traceable to a K-decision in the design doc. Breaki
 
 - **`apply` reads the current `decision` row only** — never `proposal.pin_*` (K12). `repo.add_decision` is the *only* decision mutator; it resolves what the human accepted (copying the proposal pin on a bare `accept`), enforces exactly one `current=1` per photo, and rejects null/non-finite coordinates. A persisted accept always has finite lat/lng, so `apply` never guesses.
 - **No auto-write at any confidence.** `ui_rank` sorts and colors the UI; it never gates a write. `skip --all-low` is preview-and-confirm.
-- **Every xAI image call sets `store=False` and an explicit `reasoning_effort`** (K13). `VisionCallOptions` validates on construction and `assert_safe_vision_options` re-checks before the send; the wrapper refuses otherwise. Omitting the knob silently bills `high` on `grok-4.6`. `xhigh` is rejected in v1. `tests/test_xai_flags.py` asserts this against the real wrapper, not the fake.
+- **Every image call names its reasoning budget explicitly, and no call opts into retention** (K13). `VisionCallOptions` validates on construction and `assert_safe_vision_options` re-checks before the send; both wrappers refuse otherwise. On xAI that is `store=False`/`store_messages=False` plus `reasoning_effort` — omitting the knob silently bills `high` on `grok-4.6`. On Gemini it is `thinkingConfig.thinkingBudget`, mapped from the same `low`/`medium`/`high`; an omitted budget lets the model pick and bill its own. `xhigh` is rejected. `tests/test_xai_flags.py` and `tests/test_provider_plugin.py` assert this against the real wrappers, not the fake.
+- **Gemini has no per-request `store=False`.** Retention follows the key's tier and the API does not report it, so `propose` cannot verify it and warns on every `--provider gemini` run instead. Do not present a Gemini run as non-retaining; the README tells the user to enable billing on the key.
+- **A provider reads only its own key** (`XAI_API_KEY` / `GEMINI_API_KEY`) and its own model setting (`GPSIFY_MODEL` / `GPSIFY_GEMINI_MODEL`). Never fall back to the other provider's credentials, and keep `estimate_usd` keyed by model — the running USD line is wrong by ~3× if a Gemini run prices at Grok rates.
 - **RAW bytes are never rewritten** (K17). RAW goes out as an extracted embedded preview and comes back as a sibling `.xmp` sidecar; the receipt's `dest_path` *is* the sidecar. Never back up a RAW — back up the previous sidecar or nothing.
 - **`photo.sha256` is always the ingest (pre-tag) hash.** Post-write identity lives on `write_receipt.written_sha256`. Dest inspection therefore runs *before* any ingest-hash abort, or `--in-place` retries would wrongly report `source_changed`.
 - **Schema v1 is complete and frozen** (`PRAGMA user_version=1`). Do not add columns; additive migrations only after v1. Never rewrite a proposal's `raw_json` — append a row and flip `current`.

@@ -95,7 +95,7 @@ Existing geotaggers (GeoSetter, ExifTool GUI, DigiKam, `osxphotos`) already writ
 | # | Decision | Rationale |
 | --- | --- | --- |
 | K1 | **Python 3.12+ CLI + localhost review UI**, not Electron/Tauri and not CLI-only | Review needs a map pin. Python owns EXIF, HEIC decode, Pillow, Pydantic, and SQLite. A 127.0.0.1 Starlette app plus Leaflet is enough for a personal tool; Electron/Tauri adds packaging cost with no product gain in v1. Pure CLI cannot show a pin. |
-| K2 | **SpaceXAI (`grok-4.6`) is the only v1 vision provider** | User decision 2026-08-12: Grok only for dogfood. The `VisionProvider` protocol stays so a Gemini plugin can land later; it is **post-v1 / optional**, not required to ship. |
+| K2 | **SpaceXAI (`grok-4.6`) is the default vision provider; Gemini is the second** | User decision 2026-08-12: Grok only for v1 dogfood. Gemini landed post-v1 as PR 10 (`--provider gemini`, `GEMINI_API_KEY`, default `gemini-2.5-flash`) behind the same `VisionProvider` protocol and the same `PROMPT_V1`/`VisionGuess` contract. Grok stays the default; neither provider reads the other's key. |
 | K3 | **Never trust model lat/lng alone**; geocode the place name | Models hallucinate coordinates. The configured geocoder converts a named place to a real point. Disagreement is shown, not silently averaged. |
 | K4 | **Human confirmation is mandatory**; no auto-write, even at high UI rank | A wrong pin is worse than no pin. |
 | K5 | **Non-destructive by default**: `gpsify apply <job_id>` writes copies to `~/.gpsify/jobs/<id>/copies/<relpath>`. `--out DIR` overrides that dest. `--in-place` is explicit and mutually exclusive with `--out`. | Originals stay untouched unless the user opts in. Omitting both flags is not a usage error — dest is the job `copies/` tree, and `status` prints it. |
@@ -165,7 +165,7 @@ gpsify/
     providers/
       base.py
       xai_grok.py
-      gemini.py                 # post-v1 / optional (PR 10)
+      gemini.py                 # post-v1 second provider (PR 10)
     geocode/
       base.py
       nominatim.py
@@ -196,7 +196,7 @@ gpsify/
       known_locations.json
 ```
 
-No `scripts/smoke_folder.sh` in v1. Live checks live under `pytest -m live`. `scripts/bakeoff.py` is post-v1 (optional PR 10).
+No `scripts/smoke_folder.sh` in v1. Live checks live under `pytest -m live`. `scripts/bakeoff.py` landed post-v1 (PR 10): it spends real money on real API calls, so it is a script you run deliberately, never part of the test suite.
 
 Local data (not in the repo):
 
@@ -259,11 +259,11 @@ gpsify ingest <folder> [--hint "weekend in Porto"] [--recursive] [--relocate JOB
        → prints job_id, counts (tagged / untagged / skipped / missing / clusters)
 
 gpsify propose <job_id> [--limit N] [--concurrency 3] [--dry-run] [--force]
-                     [--no-context] [--provider xai]
+                     [--no-context] [--provider xai|gemini]
                      [--geocode-uncached-max N]
        → --dry-run: no network, print planned calls + cache hits
        → --no-context: pixels only (no hint / folder / filename / siblings)
-       → --provider: v1 is xai only; gemini is post-v1 / optional
+       → --provider: xai (default) | gemini; defaults to GPSIFY_VISION_PROVIDER
        → --geocode-uncached-max: public Nominatim uncached cap (default 50)
        → default (no --dry-run): vision + geocode; writes proposals; does not write GPS
 
@@ -549,6 +549,24 @@ exiftool -n \
 The `xai_grok` wrapper **must refuse to send** if `store_messages`/`store` is not False or if `reasoning_effort` is missing. `tests/test_xai_flags.py` asserts this on the wrapper (not the fake provider).
 
 Image payload: data URL `data:image/jpeg;base64,...` of the **resized, transposed** JPEG. Never a public URL of the user's photo. Never the 12 MP original.
+
+**Provider defaults (Google Gemini) — normative client contract (PR 10):**
+
+| Item | Value |
+| --- | --- |
+| Env | `GEMINI_API_KEY` (**billing-enabled**; see Storage below) |
+| Base URL | `https://generativelanguage.googleapis.com/v1beta` |
+| Model | `gemini-2.5-flash` (`GPSIFY_GEMINI_MODEL`); `gemini-2.5-pro` for the accuracy ceiling |
+| Image input | inline base64 `image/jpeg`; whole request must stay under 20 MB, so the raw JPEG is capped at 14 MiB |
+| Call style | `POST /models/{model}:generateContent`, key in the **`x-goog-api-key` header** — never `?key=`, which lands in proxy logs |
+| Structured output | `generationConfig.responseMimeType = "application/json"` + `responseSchema`. Gemini's schema is an OpenAPI 3.0 subset: `to_gemini_schema` inlines `$ref`/`$defs`, collapses `anyOf: [T, null]` to `nullable`, drops `title`/`default`, and stamps `propertyOrdering`. |
+| Storage | **No per-request flag exists.** Retention follows the key's tier, which the API does not report. Free-tier prompts and images may be used to improve Google products; billed keys are excluded. `propose` warns once per run and cannot verify it. |
+| Reasoning | **Always pass** `thinkingConfig.thinkingBudget`, mapped from `reasoning_effort`: `low` 1024, `medium` 8192, `high` 24576, clamped per model family (2.5 Pro cannot think below 128 tokens; Flash caps at 24576). Omitting it lets the model choose and bill its own budget. `includeThoughts` is False. |
+| Timeout | Same `timeout_s` as xAI (default 600, minimum 120). |
+| Usage | `usageMetadata.promptTokenCount` / `candidatesTokenCount` / **`thoughtsTokenCount`** map onto `Usage`. Thinking tokens bill as output. |
+| Prompt | Imports `PROMPT_V1` and `format_user_message` from `xai_grok`. A bake-off is only meaningful if both providers see the identical prompt. |
+
+The `gemini` wrapper **must refuse to send** if `thinkingConfig.thinkingBudget` is absent, if `responseMimeType` is not `application/json`, or if `responseSchema` is missing. `tests/test_provider_plugin.py` asserts this on the wrapper (not the fake provider).
 
 #### Pydantic schema (wire contract)
 
@@ -1155,7 +1173,7 @@ class VisionProvider(Protocol):
         ...
 ```
 
-`providers/xai_grok.py` is the only v1 implementation. `providers/gemini.py` is **post-v1 / optional** (PR 10). Selection in v1 is `xai` only; `--provider gemini` may exist later if a key is added.
+`providers/xai_grok.py` is the v1 implementation and stays the default. `providers/gemini.py` (PR 10) is the post-v1 second provider: same `PROMPT_V1`, same `VisionGuess` schema, selected with `--provider gemini` and `GEMINI_API_KEY`. `run_propose` refuses an unknown provider and refuses to borrow the other provider's key.
 
 ### Review HTTP (loopback)
 
@@ -1310,8 +1328,10 @@ Personal project — no feature-flag service. Rollout = incremental PRs (see [PR
 
 | Flag / env | Default | Purpose |
 | --- | --- | --- |
-| `GPSIFY_VISION_PROVIDER` | `xai` | Plugin switch |
-| `GPSIFY_MODEL` | `grok-4.6` | Pin a dated alias if needed |
+| `GPSIFY_VISION_PROVIDER` | `xai` | Plugin switch: `xai` \| `gemini`; default for `--provider` |
+| `GPSIFY_MODEL` | `grok-4.6` | Pin a dated alias if needed (provider `xai`) |
+| `GPSIFY_GEMINI_MODEL` | `gemini-2.5-flash` | Vision model for provider `gemini` |
+| `GEMINI_API_KEY` | unset | Required for `--provider gemini`; use a billed key |
 | `GPSIFY_REASONING` | `low` | Must be passed on every call |
 | `GPSIFY_TIMEOUT_S` | `600` | Client timeout |
 | `nominatim_contact` | unset (required) | Identifiable Nominatim UA |
@@ -1319,7 +1339,7 @@ Personal project — no feature-flag service. Rollout = incremental PRs (see [PR
 | `--no-context` | off | Wow-demo mode |
 | `--dry-run` | off | No network (propose) / no writes (apply) |
 | `--in-place` | off | Mutate originals |
-| `--provider gemini` | off | Post-v1 / optional only |
+| `--provider gemini` | off | Post-v1 second provider (PR 10); needs `GEMINI_API_KEY` |
 | `--geocode-uncached-max` | 50 | Public Nominatim cap |
 
 **Staged self-rollout:**
@@ -1465,6 +1485,7 @@ Incremental, each PR independently reviewable and mergeable on `main`. Later PRs
 - **Title:** `feat: pluggable Gemini vision provider and fixture bake-off`
 - **Files:** `src/gpsify/providers/gemini.py`, `tests/test_provider_plugin.py`, `scripts/bakeoff.py`
 - **Depends on:** PR 6
-- **Changes:** **Out of v1 scope.** `--provider gemini` if `GEMINI_API_KEY` set; same `VisionGuess` schema. Script compares country/city hit rate on `tests/fixtures/known/` **and records actual `usage` (incl. reasoning_tokens)** to rewrite estimate coefficients. No GPS writes. v1 ships Grok only (K2).
+- **Status:** **shipped** (provider + bake-off).
+- **Changes:** `--provider gemini` when `GEMINI_API_KEY` is set, defaulting to `gemini-2.5-flash` per [`docs/research/vision-model-selection.md`](research/vision-model-selection.md); same `PROMPT_V1` and `VisionGuess` schema as xAI. `estimate_usd` is keyed by model so a Gemini run is not priced at Grok rates. Neither provider reads the other's key. `scripts/bakeoff.py` scores any `provider:model` list against an album of already-geotagged photos — **the album's own EXIF GPS is the ground truth**, so no fixture corpus is checked in (real geotagged travel photos do not belong in a public repo, and `tests/fixtures/known/` was dropped for that reason). It reports Acc@1/25/200/750 km, median error, refusal rate, **actual `usage` incl. reasoning_tokens**, and real USD per model, which is the input for rewriting the `USD_PER_MILLION` coefficients. No GPS writes; Grok stays the default (K2).
 
 Each PR includes tests for the new surface and keeps `gpsify --help` working. There is no path that writes GPS without a stored current decision.

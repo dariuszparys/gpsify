@@ -54,12 +54,14 @@ Secrets stay out of git. Copy [`.env.example`](.env.example) to `.env` or export
 
 | Name | Default | Purpose |
 | --- | --- | --- |
-| `XAI_API_KEY` | unset | Vision provider (required from `propose` onward) |
+| `XAI_API_KEY` | unset | Key for `--provider xai` (required from `propose` onward) |
+| `GEMINI_API_KEY` | unset | Key for `--provider gemini` |
 | `NOMINATIM_CONTACT` | unset | Email-shaped contact for public Nominatim |
-| `GPSIFY_MODEL` | `grok-4.6` | Vision model |
+| `GPSIFY_MODEL` | `grok-4.6` | Vision model for `--provider xai` |
+| `GPSIFY_GEMINI_MODEL` | `gemini-2.5-flash` | Vision model for `--provider gemini` |
 | `GPSIFY_REASONING` | `low` | `low` \| `medium` \| `high` (`xhigh` is rejected) |
 | `GPSIFY_TIMEOUT_S` | `600` | Client timeout (minimum 120) |
-| `GPSIFY_VISION_PROVIDER` | `xai` | v1 is xAI only |
+| `GPSIFY_VISION_PROVIDER` | `xai` | `xai` \| `gemini`; default for `--provider` |
 | `GPSIFY_DATA_DIR` | `~/.gpsify` | Config, job index, and job trees |
 | `GEOCODER_URL` | public Nominatim search | Switch geocoder without a code change |
 
@@ -73,19 +75,76 @@ map_tile_url = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 geocode_lang = "en"
 
 [vision]
-provider = "xai"
-model = "grok-4.6"
+provider = "xai"           # or "gemini"
+model = "grok-4.6"         # used when provider = "xai"
+gemini_model = "gemini-2.5-flash"
 reasoning_effort = "low"
 timeout_s = 600
 ```
 
 Environment variables override the TOML file.
 
+## Vision providers
+
+Both providers send the same `PROMPT_V1` and are held to the same `VisionGuess`
+schema, so runs are comparable. Each reads only its own key — selecting one
+provider never falls back to the other's credentials.
+
+| | `xai` (default) | `gemini` |
+| --- | --- | --- |
+| Key | `XAI_API_KEY` | `GEMINI_API_KEY` |
+| Default model | `grok-4.6` | `gemini-2.5-flash` |
+| Reasoning knob | `reasoning_effort` | `thinkingConfig.thinkingBudget`, mapped from the same `low`/`medium`/`high` |
+| ~Cost per photo | ~$0.006–$0.015 | ~$0.0018 |
+| No-retention | `store=False` on every call | **key-tier property — see below** |
+
+```bash
+export GEMINI_API_KEY=...
+uv run gpsify propose <job_id> --provider gemini
+```
+
+`gemini-2.5-flash` is the default because
+[`docs/research/vision-model-selection.md`](docs/research/vision-model-selection.md)
+ranks it second on every public photo-geolocation benchmark it surveys
+(GeoArena, EarthWhere, GeoRC) at roughly 3–8× lower list cost than `grok-4.6`.
+Set `GPSIFY_GEMINI_MODEL=gemini-2.5-pro` for the accuracy ceiling — first on
+those same boards, at roughly Grok-like spend.
+
+### Which model — measure, don't read
+
+The research note ranks `gemini-2.5-flash` on *other people's* photos. To settle
+it on yours, `scripts/bakeoff.py` scores any set of models against photos whose
+GPS you already have — the album's own EXIF is the answer key:
+
+```bash
+uv run python scripts/bakeoff.py ~/Pictures/porto-2019 \
+    --model xai:grok-4.6 \
+    --model gemini:gemini-2.5-flash \
+    --model gemini:gemini-2.5-pro \
+    --limit 20 --out bakeoff.json
+```
+
+Every model sees the byte-identical 1280 px preview, its place name goes through
+the normal geocode path, and the distance from that pin to the photo's real
+coordinates is the score. Output is Acc@1/25/200/750 km, median error, refusal
+rate, observed token profile, and real dollars per photo. It writes no GPS and
+mutates nothing; `GPSIFY_DRY_RUN=1` prints the plan and spends nothing.
+
+One vision call per photo per model, so start with `--limit`.
+
+### Gemini retention: use a billed key
+
+Gemini has **no per-request `store=False`**. Retention is a property of the key's
+tier, which the API does not report, so gpsify cannot check it for you and
+prints a warning on every `--provider gemini` run. On the free tier Google may
+use prompts and images to improve its products; billing-enabled keys are
+excluded. Enable billing on the key before pointing it at real photos.
+
 ## CLI
 
 ```text
 gpsify ingest <folder> [--hint TEXT] [--recursive] [--relocate JOB_ID]
-gpsify propose <job_id> [--limit N] [--dry-run] [--no-context] ...
+gpsify propose <job_id> [--limit N] [--dry-run] [--no-context] [--provider xai|gemini] ...
 gpsify review <job_id> [--port 8765]
 gpsify decide <job_id> --photo ID --action accept|skip|accept_edited [--lat --lng]
 gpsify apply <job_id> [--out DIR] [--in-place] [--dry-run]

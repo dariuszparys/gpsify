@@ -8,6 +8,7 @@ from typing import Self
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 ALLOWED_REASONING_EFFORT = frozenset({"low", "medium", "high"})
+ALLOWED_VISION_PROVIDERS = frozenset({"xai", "gemini"})
 MIN_VISION_TIMEOUT_S = 120.0
 
 

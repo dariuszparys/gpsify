@@ -14,6 +14,7 @@ import statistics
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Any, Never, TextIO
 
@@ -34,6 +35,7 @@ from gpsify.geocode import (
 from gpsify.geocode.nominatim import NominatimGeocoder
 from gpsify.media import MediaError, ensure_preview
 from gpsify.providers import (
+    GeminiProvider,
     VisionError,
     VisionProvider,
     VisionRetryableError,
@@ -43,6 +45,7 @@ from gpsify.providers.xai_grok import PROMPT_VERSION
 from gpsify.reconcile import ReconcileResult, geocode_and_reconcile
 from gpsify.store import JobRepo, StoreError, job_dir
 from gpsify.types import (
+    ALLOWED_VISION_PROVIDERS,
     Granularity,
     PhotoStatus,
     PinSource,
@@ -62,7 +65,37 @@ SIGN_TEXT_KINDS = frozenset({"sign", "text"})
 # grok-4.6 published rates below 200k prompt (docs.x.ai). Reasoning billed as output.
 USD_PER_MILLION_INPUT = 2.0
 USD_PER_MILLION_OUTPUT = 6.0
+# Per-model (input, output) USD per 1M tokens. Order-of-magnitude priors for the
+# running estimate, never a quote. Thinking/reasoning tokens bill as output on
+# both providers. Unknown models fall back to the grok-4.6 rates above, which
+# over- rather than under-state every Gemini model here.
+# Gemini rates verified against ai.google.dev/gemini-api/docs/pricing, paid tier,
+# 2026-08-25. grok-4.6 from docs.x.ai (<200k prompt).
+USD_PER_MILLION: dict[str, tuple[float, float]] = {
+    "grok-4.6": (2.0, 6.0),
+    "gemini-2.5-pro": (1.25, 10.0),
+    "gemini-2.5-flash": (0.30, 2.50),
+    "gemini-2.5-flash-lite": (0.10, 0.40),
+    "gemini-3.5-flash": (1.50, 9.00),
+    "gemini-3.5-flash-lite": (0.30, 2.50),
+    "gemini-3.6-flash": (0.75, 3.75),
+    "gemini-3.7-flash": (0.75, 3.75),
+}
+# Google's 3.6/3.7 Flash launch pricing is promotional and doubles on this date.
+# Without this, every estimate silently halves itself from New Year's Day.
+PROMO_UNTIL = date(2026, 12, 31)
+USD_PER_MILLION_AFTER_PROMO: dict[str, tuple[float, float]] = {
+    "gemini-3.6-flash": (1.50, 7.50),
+    "gemini-3.7-flash": (1.50, 7.50),
+}
 LOCK_FILENAME = "propose.lock"
+PROVIDER_KEY_ENV = {"xai": "XAI_API_KEY", "gemini": "GEMINI_API_KEY"}
+# Gemini has no per-request store=False. Retention is a property of the key's
+# tier, and gpsify cannot detect the tier from the API, so it says so out loud.
+GEMINI_TIER_WARNING = (
+    "gemini has no per-request store=False; free-tier keys may be used to "
+    "improve Google products. Use a billing-enabled key for real photos."
+)
 
 _HINT_STOPWORDS = frozenset(
     {
@@ -109,13 +142,20 @@ def clip01(value: float) -> float:
     return max(0.0, min(1.0, value))
 
 
-def estimate_usd(usage: Usage) -> float:
-    """Order-of-magnitude prior from published grok-4.6 rates, not a quote."""
+def estimate_usd(usage: Usage, model: str | None = None, on: date | None = None) -> float:
+    """Order-of-magnitude prior from published list rates, not a quote.
+
+    Reasoning/thinking tokens bill as output on both providers. ``on`` overrides
+    today's date so the promotional-rate rollover is testable.
+    """
+    key = (model or "").strip()
+    rate_in, rate_out = USD_PER_MILLION.get(
+        key, (USD_PER_MILLION_INPUT, USD_PER_MILLION_OUTPUT)
+    )
+    if (on or date.today()) > PROMO_UNTIL and key in USD_PER_MILLION_AFTER_PROMO:
+        rate_in, rate_out = USD_PER_MILLION_AFTER_PROMO[key]
     output = usage.output_tokens + usage.reasoning_tokens
-    return (
-        usage.input_tokens * USD_PER_MILLION_INPUT
-        + output * USD_PER_MILLION_OUTPUT
-    ) / 1_000_000.0
+    return (usage.input_tokens * rate_in + output * rate_out) / 1_000_000.0
 
 
 def granularity_score(granularity: Granularity) -> float:
@@ -352,7 +392,7 @@ async def run_propose(
     dry_run: bool = False,
     force: bool = False,
     no_context: bool = False,
-    provider_name: str = "xai",
+    provider_name: str | None = None,
     geocode_uncached_max: int = DEFAULT_UNCACHED_MAX,
     vision: VisionProvider | None = None,
     geocoder: Geocoder | None = None,
@@ -364,11 +404,15 @@ async def run_propose(
         raise ProposeError("--concurrency must be >= 1")
     if limit is not None and limit < 1:
         raise ProposeError("--limit must be >= 1")
-    provider_key = provider_name.strip().lower()
-    if vision is None and provider_key != "xai":
-        raise ProposeError("v1 vision provider is xai only (gemini is post-v1)")
-    if not dry_run and vision is None and not settings.xai_api_key:
-        raise ProposeError("XAI_API_KEY is required for propose")
+    provider_key = (provider_name or settings.vision_provider).strip().lower()
+    if vision is None and provider_key not in ALLOWED_VISION_PROVIDERS:
+        allowed = ", ".join(sorted(ALLOWED_VISION_PROVIDERS))
+        raise ProposeError(f"--provider must be one of {allowed}; got {provider_key!r}")
+    if not dry_run and vision is None and not _api_key(settings, provider_key):
+        raise ProposeError(
+            f"{PROVIDER_KEY_ENV[provider_key]} is required for propose "
+            f"--provider {provider_key}"
+        )
     try:
         require_geocoder_ready(settings)
     except GeocodeConfigError as exc:
@@ -380,7 +424,7 @@ async def run_propose(
     lock.acquire()
     repo: JobRepo | None = None
     cache: GeocodeCache | None = None
-    xai: XaiGrokProvider | None = None
+    owned_vision: XaiGrokProvider | GeminiProvider | None = None
     nominatim: NominatimGeocoder | None = None
     log_handle: TextIO | None = None
     try:
@@ -411,7 +455,7 @@ async def run_propose(
                 progress,
                 f"dry-run: {summary.planned} vision calls planned, "
                 f"{summary.cache_hits} geocode cache hits "
-                "(no xAI, no public Nominatim)",
+                f"(no {provider_key}, no public Nominatim)",
             )
             return summary
 
@@ -427,7 +471,10 @@ async def run_propose(
             uncached_max=geocode_uncached_max,
             cap_uncached=cap_uncached,
         )
-        resolved_vision, xai = _resolve_vision(settings, vision)
+        resolved_vision, owned_vision = _resolve_vision(settings, vision, provider_key)
+        if owned_vision is not None and owned_vision.name == "gemini":
+            summary.warnings.append(GEMINI_TIER_WARNING)
+            _emit(progress, f"warning: {GEMINI_TIER_WARNING}")
         log_dir = root / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_handle = (log_dir / "propose.log").open("a", encoding="utf-8")
@@ -490,8 +537,8 @@ async def run_propose(
             await cache.close()
         if nominatim is not None:
             await nominatim.aclose()
-        if xai is not None:
-            await xai.aclose()
+        if owned_vision is not None:
+            await owned_vision.aclose()
         if repo is not None:
             await repo.close()
         lock.release()
@@ -510,13 +557,29 @@ def _resolve_geocoder(
     return client, client
 
 
+def _api_key(settings: Settings, provider_key: str) -> str | None:
+    match provider_key:
+        case "xai":
+            return settings.xai_api_key
+        case "gemini":
+            return settings.gemini_api_key
+        case _:
+            return None
+
+
 def _resolve_vision(
-    settings: Settings, vision: VisionProvider | None
-) -> tuple[VisionProvider, XaiGrokProvider | None]:
+    settings: Settings, vision: VisionProvider | None, provider_key: str
+) -> tuple[VisionProvider, XaiGrokProvider | GeminiProvider | None]:
     if vision is not None:
         return vision, None
-    assert settings.xai_api_key is not None
-    client = XaiGrokProvider(settings.xai_api_key, model=settings.model)
+    api_key = _api_key(settings, provider_key)
+    assert api_key is not None
+    client: XaiGrokProvider | GeminiProvider
+    match provider_key:
+        case "gemini":
+            client = GeminiProvider(api_key, model=settings.gemini_model)
+        case _:
+            client = XaiGrokProvider(api_key, model=settings.model)
     return client, client
 
 
@@ -705,7 +768,7 @@ async def _process_one(
         # Keep cluster context fresh for later photos.
         photo["status"] = photo_status.value
 
-    usd = estimate_usd(usage)
+    usd = estimate_usd(usage, vision.model)
     summary.est_usd += usd
     summary.input_tokens += usage.input_tokens
     summary.output_tokens += usage.output_tokens

@@ -574,15 +574,29 @@ def test_missing_nominatim_contact_exits_2(
         run(run_propose(ingested.job_id, settings=settings, dry_run=True))
 
 
-def test_gemini_provider_rejected(tmp_path: Path, data_dir: Path) -> None:
+def test_gemini_provider_needs_its_own_key(tmp_path: Path, data_dir: Path) -> None:
+    """--provider gemini is accepted (PR 10) but never borrows XAI_API_KEY."""
     folder = tmp_path / "album"
     ingested = _ingest_plain(folder, data_dir)
-    with pytest.raises(ProposeError, match="xai only"):
+    with pytest.raises(ProposeError, match="GEMINI_API_KEY is required"):
+        run(
+            run_propose(
+                ingested.job_id,
+                settings=_settings(data_dir, gemini_api_key=None),
+                provider_name="gemini",
+            )
+        )
+
+
+def test_unknown_provider_rejected(tmp_path: Path, data_dir: Path) -> None:
+    folder = tmp_path / "album"
+    ingested = _ingest_plain(folder, data_dir)
+    with pytest.raises(ProposeError, match="--provider must be one of"):
         run(
             run_propose(
                 ingested.job_id,
                 settings=_settings(data_dir),
-                provider_name="gemini",
+                provider_name="openai",
             )
         )
 
@@ -608,16 +622,19 @@ def test_cli_propose_help_and_dry_run(
     assert "vision calls planned" in combined
 
 
-def test_cli_rejects_gemini(tmp_path: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_gemini_requires_a_gemini_key(
+    tmp_path: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     folder = tmp_path / "album"
     ingested = _ingest_plain(folder, data_dir)
     monkeypatch.setenv("GPSIFY_DATA_DIR", str(data_dir))
     monkeypatch.setenv("NOMINATIM_CONTACT", "dev@example.com")
     monkeypatch.setenv("GEOCODER_URL", "http://127.0.0.1:8080/search")
     monkeypatch.setenv("XAI_API_KEY", "test-key")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     result = runner.invoke(app, ["propose", ingested.job_id, "--provider", "gemini"])
     assert result.exit_code == 2
-    assert "xai only" in _plain(f"{result.stdout}{result.stderr}").lower()
+    assert "gemini_api_key is required" in _plain(f"{result.stdout}{result.stderr}").lower()
 
 
 def test_house_address_not_geocoded(tmp_path: Path, data_dir: Path) -> None:

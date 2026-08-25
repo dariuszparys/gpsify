@@ -17,9 +17,16 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
-from gpsify.types import ALLOWED_REASONING_EFFORT, MIN_VISION_TIMEOUT_S
+from gpsify.types import (
+    ALLOWED_REASONING_EFFORT,
+    ALLOWED_VISION_PROVIDERS,
+    MIN_VISION_TIMEOUT_S,
+)
 
 DEFAULT_MODEL = "grok-4.6"
+# Per docs/research/vision-model-selection.md: best cheap hosted pick for this
+# workload. gemini-2.5-pro is the accuracy ceiling at grok-like spend.
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_REASONING = "low"
 DEFAULT_TIMEOUT_S = 600.0
 DEFAULT_VISION_PROVIDER = "xai"
@@ -33,6 +40,7 @@ _EMAIL_SHAPED = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _VISION_TOML_KEYS = {
     "provider": "vision_provider",
     "model": "model",
+    "gemini_model": "gemini_model",
     "reasoning_effort": "reasoning_effort",
     "timeout_s": "timeout_s",
 }
@@ -124,6 +132,14 @@ class Settings(BaseSettings):
         default=DEFAULT_MODEL,
         validation_alias=AliasChoices("GPSIFY_MODEL", "model"),
     )
+    gemini_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("GEMINI_API_KEY", "gemini_api_key"),
+    )
+    gemini_model: str = Field(
+        default=DEFAULT_GEMINI_MODEL,
+        validation_alias=AliasChoices("GPSIFY_GEMINI_MODEL", "gemini_model"),
+    )
     reasoning_effort: str = Field(
         default=DEFAULT_REASONING,
         validation_alias=AliasChoices("GPSIFY_REASONING", "reasoning_effort"),
@@ -198,10 +214,18 @@ class Settings(BaseSettings):
     def _normalize_token(cls, value: str) -> str:
         return value.strip().lower()
 
-    @field_validator("model")
+    @field_validator("model", "gemini_model")
     @classmethod
     def _strip_model(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("vision_provider")
+    @classmethod
+    def _known_vision_provider(cls, value: str) -> str:
+        if value not in ALLOWED_VISION_PROVIDERS:
+            allowed = ", ".join(sorted(ALLOWED_VISION_PROVIDERS))
+            raise ValueError(f"vision_provider must be one of {allowed}; got {value!r}")
+        return value
 
     @classmethod
     def settings_customise_sources(

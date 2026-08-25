@@ -78,7 +78,10 @@ For a 1280×853-class JPEG plus ~600 JSON output tokens (Gemini figures include 
 | Qwen3-VL-30B-A3B-Instruct (OpenRouter) | $0.13 / $0.52 | ~$0.00016 | ~$0.00047 | — |
 | gpt-5.6-luna | $0.20 / $1.20 | — | ~$0.0010 | 50% off |
 | Gemini 2.5 Flash | $0.30 / $2.50 | — | ~$0.0018 | 50% off |
-| Gemini 3.7 Flash (promo through 31 Dec 2026) | $0.75 / $3.75 | — | ~$0.0030 | 50% off |
+| Gemini 3.5 Flash-Lite | $0.30 / $2.50 | — | ~$0.0018 | 50% off |
+| Gemini 3.7 Flash (promo) | $0.75 / $3.75 → **$1.50 / $7.50 on 1 Jan 2027** | — | ~$0.0030 → ~$0.0060 | 50% off |
+| Gemini 3.6 Flash (promo) | $0.75 / $3.75 → **$1.50 / $7.50 on 1 Jan 2027** | — | ~$0.0030 → ~$0.0060 | 50% off |
+| Gemini 3.5 Flash | $1.50 / $9.00 | — | ~$0.0069 | 50% off |
 | Claude Haiku 4.5 | $1 / $5 | ~$0.00143 | ~$0.0044 | 50% off |
 | grok-4.6 | $2 / $6 (cached in $0.50; rates double at ≥200k) | — | ~$0.006–$0.015 plus reasoning; ~$1.20–$3.00+ / 200 photos; ~$12–$30+ / 2,000 | Not supported |
 | Gemini 2.5 Pro (≤200k) | $1.25 / $10 | — | ~$0.0073 | 50% off |
@@ -89,6 +92,11 @@ For a 1280×853-class JPEG plus ~600 JSON output tokens (Gemini figures include 
 | Claude Sonnet 5 | $2 / $10 | — | — | 50% off |
 
 Gemini 2.5 Flash is the highest-ranked model among those sub-cent hosted options. Gemini 2.5 Pro is in the same price band as grok-4.6 on this workload while topping the geolocation leaderboards above.
+
+**Gemini rates re-verified 2026-08-25** against [ai.google.dev/gemini-api/docs/pricing](https://ai.google.dev/gemini-api/docs/pricing) (paid tier). Two things the earlier snapshot missed:
+
+- **3.6 and 3.7 Flash are on promotional launch pricing that doubles on 1 January 2027** ($0.75/$3.75 → $1.50/$7.50). After the rollover, 3.7 Flash costs *more* per photo than `grok-4.6` on this workload once thinking tokens are counted, which removes the cost argument for switching to it. `estimate_usd` encodes the rollover date.
+- **Gemini 3.5 Flash-Lite lists at $0.30 / $2.50 — identical to Gemini 2.5 Flash.** That makes it a more interesting generation-3 candidate than 3.7 Flash: newer weights at the current default's exact price. Neither has a published geolocation score, so it is a bake-off question, not a reading question.
 
 ### Image-token math
 
@@ -131,7 +139,7 @@ v1 propose must call a vision model (not a text-only LLM) with a resized, orient
 
 That clue set is exactly where closed–open gaps are largest. Self-hosted Qwen3-VL is a workable cheap path for coarse city/country on tourist-like photos; it is not shown to deliver gpsify-class street-level sign/architecture pins without extra map tools, and the smallest local dense sizes are country-name predictors with a large urban–rural gap.
 
-gpsify does not ship a bake-off that measures whether the cheapest or smallest VLMs fail strict JSON Schema or interior-refusal. Local VLM and cheap indoor-triage models are deferred in `docs/design.md` (alternatives 6 and 8) for setup and second-provider cost, not a failed capability test. A small bake-off on a known album (Flash vs Grok, record real `usage`) would beat any of these papers for this repo.
+gpsify now ships that bake-off as `scripts/bakeoff.py` (PR 10): it scores any model against photos whose GPS you already have, so the answer is measured on your own album rather than inferred from the tables above. What follows is the prior it replaces. Local VLM and cheap indoor-triage models are deferred in `docs/design.md` (alternatives 6 and 8) for setup and second-provider cost, not a failed capability test. A small bake-off on a known album (Flash vs Grok, record real `usage`) would beat any of these papers for this repo.
 
 ---
 
@@ -143,6 +151,7 @@ gpsify does not ship a bake-off that measures whether the cheapest or smallest V
 - GeoArena ranks human preference, not GPS error, and style (longer answers) influences votes.
 - Street-level precision stays low even for top models (e.g. EarthWhere Bilibili Acc@1km 6.38% for Gemini-2.5-pro with web).
 - gpsify’s default Grok provider is not scored on IMAGEO-Bench, EarthWhere, GeoArena, or GeoRC in the sources inspected.
+- **No Gemini 3.x Flash model has a published geolocation score in any source here.** The only generation-3 model that is scored is Gemini-3-Pro, and on GeoRC it lands *below* Gemini-2.5-Pro (90.40% vs 91.20%) — one benchmark, Pro-vs-Pro, but the only within-family generational comparison available, and it does not favour the newer generation. Do not assume a 3.x Flash beats 2.5 Flash at this task without measuring it.
 - xAI’s official Image Understanding page documents `detail=high` and jpeg/png input but does not publish a tile/token formula, so grok-4.6 dollars per 1280px JPEG cannot be computed from primary docs; gpsify’s $0.006–$0.015 band is an explicit guess.
 - Frontier models bill reasoning/thinking (grok-4.6 defaults to high; Gemini output price includes thinking). Those tokens can exceed the 400–800 JSON schema and are not included in the Luna/Flash-Lite/Haiku arithmetic above.
 - Aspect ratio at a 1280px long edge changes tile/patch counts (e.g. 16:9 vs square), so per-image input tokens move with orientation.
