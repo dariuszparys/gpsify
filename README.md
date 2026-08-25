@@ -13,18 +13,40 @@ GPS is never written without a stored current decision.
 ## Requirements
 
 - Python 3.12+
+- [`exiftool`](https://exiftool.org) on `PATH` — `brew install exiftool`. Treat this as required, not optional; see below.
 - macOS-first (HEIC, Homebrew `exiftool`, Time Machine). Linux is best-effort; Windows is out of v1.
+
+### Why `exiftool` is effectively required
+
+gpsify runs without it, but EXIF reads fall back to Pillow / Piexif, which is **JPEG-only**. On a folder of real photos that means:
+
+- **HEIC EXIF is skipped entirely.** An already-geotagged HEIC ingests as `untagged` and would be proposed a new location. This is the one that costs you data.
+- HEIC and RAW capture times are missing, so those photos fall out of time clustering.
+- RAW files read as no EXIF (a sibling `.xmp` sidecar is still read), and RAW preview extract is unavailable.
+- `apply` fails every HEIC with `HEIC write requires exiftool`.
+
+`ingest` warns when it is missing:
+
+```
+warning: exiftool not found; using Pillow/Piexif for JPEG EXIF only. HEIC GPS detection skipped.
+```
+
+JPEG-only folders are fully supported on the fallback path.
 
 ## Install
 
-[uv](https://docs.astral.sh/uv/) is the only supported workflow. It provisions the Python pinned in `.python-version` and installs the exact versions in `uv.lock`.
+```bash
+brew install exiftool
+```
+
+[uv](https://docs.astral.sh/uv/) is the only supported workflow for the Python side. It provisions the Python pinned in `.python-version` and installs the exact versions in `uv.lock`.
 
 ```bash
 uv sync --extra heic
 uv run gpsify --help
 ```
 
-`heic` is optional. Omit `--extra heic` to match CI: JPEG/PNG/RAW still work and HEIC preview is `skipped_unsupported`. RAW preview extract needs `exiftool` (`brew install exiftool`).
+`heic` (`pillow-heif`) is the one optional runtime extra and covers HEIC **decode** for previews and vision. Omit `--extra heic` to match CI: JPEG/PNG/RAW still work and HEIC preview is `skipped_unsupported`.
 
 ## Configuration
 

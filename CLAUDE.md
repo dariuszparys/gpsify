@@ -10,6 +10,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
+**`exiftool` must be on `PATH`** (`brew install exiftool`). Without it, EXIF reads fall back to Pillow/Piexif — JPEG-only — so HEIC EXIF is skipped entirely, a **geotagged HEIC ingests as `untagged`** and would be proposed a new location, HEIC/RAW capture times drop out of clustering, and `apply` fails every HEIC with `HEIC write requires exiftool`. `ingest` warns when it is missing; the fallback exists for JPEG-only folders and the tests, not for real libraries.
+
 **uv is the only supported workflow.** Never `pip install`, `python -m venv`, or a bare `python`/`pytest` — run everything through `uv run`.
 
 ```bash

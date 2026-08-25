@@ -260,14 +260,25 @@ def test_png_heic_raw_classification(tmp_path: Path, data_dir: Path) -> None:
     (folder / "pic.png").write_bytes(b"not-a-real-png")
     (folder / "live.heic").write_bytes(b"ftypheic")
     (folder / "body.cr2").write_bytes(b"raw-bytes")
+    # A well-formed XMP packet, matching what gpsify's own sidecar writer emits.
+    # Bare <exif:GPS*> fragments read on the Pillow/Piexif fallback but are not
+    # valid XMP, so exiftool rejects them and the result flips on exiftool.
     (folder / "body.xmp").write_text(
-        '<exif:GPSLatitude>41.1456</exif:GPSLatitude>'
-        '<exif:GPSLongitude>-8.6143</exif:GPSLongitude>',
+        '<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
+        '<x:xmpmeta xmlns:x="adobe:ns:meta/">\n'
+        ' <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n'
+        '  <rdf:Description rdf:about=""\n'
+        '   xmlns:exif="http://ns.adobe.com/exif/1.0/"\n'
+        '   exif:GPSLatitude="41.1456"\n'
+        '   exif:GPSLongitude="-8.6143"/>\n'
+        ' </rdf:RDF>\n'
+        '</x:xmpmeta>\n'
+        '<?xpacket end="w"?>\n',
         encoding="utf-8",
     )
     summary = run(run_ingest(folder, data_dir=data_dir))
     assert summary.tagged == 1  # RAW + sidecar GPS
-    assert summary.untagged == 2  # png + heic (no GPS without exiftool)
+    assert summary.untagged == 2  # png + heic stubs carry no GPS either way
 
     async def inspect() -> None:
         async with await JobRepo.open(data_dir, summary.job_id) as repo:
