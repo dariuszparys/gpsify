@@ -121,7 +121,7 @@ Existing geotaggers (GeoSetter, ExifTool GUI, DigiKam, `osxphotos`) already writ
 | Layer | Choice | Why |
 | --- | --- | --- |
 | Language | Python 3.12+ on macOS | EXIF, Pillow, HEIC, Pydantic, pytest. One runtime for CLI and review server. |
-| Packaging | `pyproject.toml` + `uv` (or pip) as `gpsify` console script | Standard, no lock-in. |
+| Packaging | `pyproject.toml` + **`uv` only** (`uv.lock` committed, Python pinned in `.python-version`) as `gpsify` console script | One workflow for dev and CI; reproducible resolution. Dev tooling in `[dependency-groups]`, `heic` the one runtime extra. |
 | License | **MIT** (PR 1) | Personal prototype; permissive, no decision to defer. |
 | CLI | `typer` | Subcommands, `--help`, shell completion. |
 | Config | `pydantic-settings`, env + `~/.gpsify/config.toml` (`0600`) | Required: `XAI_API_KEY`, `nominatim_contact` (email). |

@@ -17,21 +17,14 @@ GPS is never written without a stored current decision.
 
 ## Install
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -e ".[dev,heic]"
-gpsify --help
-```
-
-`heic` is optional. Without it, JPEG/PNG/RAW still work; HEIC preview is `skipped_unsupported`. RAW preview extract needs `exiftool`.
-
-With [uv](https://docs.astral.sh/uv/):
+[uv](https://docs.astral.sh/uv/) is the only supported workflow. It provisions the Python pinned in `.python-version` and installs the exact versions in `uv.lock`.
 
 ```bash
-uv sync --group dev
+uv sync --extra heic
 uv run gpsify --help
 ```
+
+`heic` is optional. Omit `--extra heic` to match CI: JPEG/PNG/RAW still work and HEIC preview is `skipped_unsupported`. RAW preview extract needs `exiftool` (`brew install exiftool`).
 
 ## Configuration
 
@@ -84,23 +77,22 @@ Typical session:
 
 ```bash
 export XAI_API_KEY=...
-gpsify ingest ~/Pictures/porto-2019 --hint "weekend in Porto, 2019"
-gpsify propose <job_id>
-gpsify review <job_id>
-gpsify apply <job_id>
+uv run gpsify ingest ~/Pictures/porto-2019 --hint "weekend in Porto, 2019"
+uv run gpsify propose <job_id>
+uv run gpsify review <job_id>
+uv run gpsify apply <job_id>
 ```
 
 `apply` with no flags writes copies under `~/.gpsify/jobs/<id>/copies/`. `--in-place` requires `--i-mean-it` or a TTY confirm.
 
 ## Tests
 
-**GitHub Actions is the source of truth** for CI. The workflow runs `pytest --disable-socket --allow-unix-socket` with `GPSIFY_DRY_RUN=1`. Unix sockets are allowed so asyncio/aiosqlite can create an event loop; TCP/UDP stay blocked. No live xAI, Nominatim, or GPS writes.
+**GitHub Actions is the source of truth** for CI. The workflow runs `uv sync --locked` then `uv run pytest --disable-socket --allow-unix-socket` with `GPSIFY_DRY_RUN=1`. Unix sockets are allowed so asyncio/aiosqlite can create an event loop; TCP/UDP stay blocked. No live xAI, Nominatim, or GPS writes.
 
 Locally:
 
 ```bash
-python -m pip install -e ".[dev,heic]"
-python -m pytest --disable-socket --allow-unix-socket -q
+uv run pytest --disable-socket --allow-unix-socket -q
 ```
 
 HEIC and live RAW-extract tests skip when `pillow-heif` / `exiftool` are missing.

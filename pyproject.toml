@@ -28,10 +28,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = [
-  "pytest>=8.3",
-  "pytest-socket>=0.7",
-]
+# Runtime extra only. Dev tooling lives in [dependency-groups] (uv), not here.
 heic = [
   "pillow-heif>=0.21",
 ]
