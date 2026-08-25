@@ -361,3 +361,76 @@ def test_cli_ingest_photos_library_exits_2(
     assert result.exit_code == 2
     combined = _plain(f"{result.stdout}{result.stderr}")
     assert "photoslibrary" in combined.lower() or "Photos.app" in combined
+
+
+def _recursive_hints(warnings: tuple[str, ...]) -> list[str]:
+    return [text for text in warnings if "--recursive" in text]
+
+
+def test_empty_top_level_warns_about_recursive(tmp_path: Path, data_dir: Path) -> None:
+    """A date-foldered export must not report a silent ``total: 0``."""
+    root = tmp_path / "originals"
+    for day in ("2014-01-05", "2014-05-04"):
+        (root / day).mkdir(parents=True)
+        write_test_jpeg(root / day / "a.jpg", datetime_original="2014:05:04 09:00:00")
+
+    shallow = run(run_ingest(root, recursive=False, data_dir=data_dir))
+    assert shallow.total == 0
+    assert _recursive_hints(shallow.warnings) == [
+        "no files at top level; 2 subdirectories found — did you mean --recursive?"
+    ]
+
+    nested = run(run_ingest(root, recursive=True, data_dir=data_dir))
+    assert nested.total == 2
+    assert _recursive_hints(nested.warnings) == []
+
+
+def test_recursive_hint_counts_only_walkable_subdirs(tmp_path: Path, data_dir: Path) -> None:
+    """``.gpsify``, ``*.photoslibrary`` and symlinks are pruned from the walk."""
+    root = tmp_path / "pruned"
+    (root / "day1").mkdir(parents=True)
+    write_test_jpeg(root / "day1" / "a.jpg")
+    (root / ".gpsify").mkdir()
+    (root / "Old.photoslibrary").mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    os.symlink(elsewhere, root / "link")
+
+    summary = run(run_ingest(root, recursive=False, data_dir=data_dir))
+    assert _recursive_hints(summary.warnings) == [
+        "no files at top level; 1 subdirectory found — did you mean --recursive?"
+    ]
+
+
+def test_no_recursive_hint_when_top_level_has_files_or_no_subdirs(
+    tmp_path: Path, data_dir: Path
+) -> None:
+    mixed = tmp_path / "mixed"
+    (mixed / "day1").mkdir(parents=True)
+    write_test_jpeg(mixed / "day1" / "nested.jpg")
+    write_test_jpeg(mixed / "top.jpg")
+    found = run(run_ingest(mixed, recursive=False, data_dir=data_dir))
+    assert found.total == 1
+    assert _recursive_hints(found.warnings) == []
+
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    (bare / ".DS_Store").write_bytes(b"junk")
+    empty = run(run_ingest(bare, recursive=False, data_dir=data_dir))
+    assert empty.total == 0
+    assert _recursive_hints(empty.warnings) == []
+
+
+def test_cli_prints_recursive_hint_to_stderr(tmp_path: Path, data_dir: Path) -> None:
+    root = tmp_path / "cli-tree"
+    (root / "day1").mkdir(parents=True)
+    write_test_jpeg(root / "day1" / "a.jpg")
+
+    result = runner.invoke(
+        app,
+        ["ingest", str(root)],
+        env={"GPSIFY_DATA_DIR": str(data_dir)},
+    )
+    assert result.exit_code == 0
+    assert "total: 0" in _plain(result.stdout)
+    assert "warning: no files at top level; 1 subdirectory found" in _plain(result.stderr)

@@ -463,7 +463,7 @@ Cluster states are derived: `open` while any member is `pending`/`proposed`; `re
 ### Folder ingest
 
 1. Resolve `folder`. If the path is or is inside a `*.photoslibrary` bundle, **exit 2** with a message to export originals first (K14).
-2. Walk (non-recursive default; `--recursive` optional). Ignore `._*` AppleDouble, `.DS_Store`, `Thumbs.db`, and anything under `.gpsify/`.
+2. Walk (non-recursive default; `--recursive` optional). Ignore `._*` AppleDouble, `.DS_Store`, `Thumbs.db`, and anything under `.gpsify/`. If a non-recursive walk finds **zero** files and the root holds subdirectories the recursive walk would descend into, **warn** `no files at top level; N subdirectories found — did you mean --recursive?`. A date-foldered library export (`originals/2014/2014-05-04/…`) otherwise reports a silent `total: 0` and reads as a missing feature. The walk still succeeds — this is a warning, not an error, and it never flips `recursive` on the user's behalf (that would fork the resume key).
 3. Classify by extension (case-insensitive):
    - **v1 process (EXIF+XMP in-file write):** `.jpg`, `.jpeg`
    - **v1 process (XMP in-file write):** `.png`

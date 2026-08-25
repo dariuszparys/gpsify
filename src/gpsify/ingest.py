@@ -12,7 +12,8 @@ writes GPS.
 The summary accounts for every photo row: ``total`` covers the whole job and
 any status outside the tagged / untagged / skipped / missing buckets is
 reported in ``other``, so re-ingesting an already-proposed job does not print
-four zeros.
+four zeros. A non-recursive walk that finds nothing in a folder that holds
+only subdirectories warns instead of reporting a silent ``total: 0``.
 """
 
 from __future__ import annotations
@@ -139,6 +140,14 @@ async def run_ingest(
             )
 
         disk_files = _walk_and_hash(root, recursive=recursive)
+        if not disk_files and not recursive:
+            subdirs = _count_walkable_subdirs(root)
+            if subdirs:
+                noun = "subdirectory" if subdirs == 1 else "subdirectories"
+                warnings.append(
+                    f"no files at top level; {subdirs} {noun} found — "
+                    "did you mean --recursive?"
+                )
         processable_paths = [
             item.path for item in disk_files if is_processable(item.kind) and not item.unreadable
         ]
@@ -297,6 +306,23 @@ def _iter_files(root: Path, *, recursive: bool) -> list[Path]:
             if path.is_file() and not _ignored(path, root):
                 found.append(path)
     return sorted(found)
+
+
+def _count_walkable_subdirs(root: Path) -> int:
+    """Immediate subdirectories ``--recursive`` would actually descend into.
+
+    Mirrors the ``os.walk`` pruning in :func:`_iter_files`: ``.gpsify`` and
+    ``*.photoslibrary`` are excluded, and symlinked directories do not count
+    because ``followlinks=False`` never recurses into them.
+    """
+    count = 0
+    for path in root.iterdir():
+        if not path.is_dir() or path.is_symlink():
+            continue
+        if path.name == ".gpsify" or _is_photos_library_name(path.name):
+            continue
+        count += 1
+    return count
 
 
 def _ignored(path: Path, root: Path) -> bool:
