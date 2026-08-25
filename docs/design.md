@@ -270,6 +270,11 @@ gpsify propose <job_id> [--limit N] [--concurrency 3] [--dry-run] [--force]
        → --geocode-uncached-max: public Nominatim uncached cap (default 50)
        → default (no --dry-run): vision + geocode; writes proposals; does not write GPS
 
+gpsify geocode <job_id> [--limit N] [--dry-run] [--geocode-uncached-max N]
+       → geocodes proposals left at pin_source=none; no vision call, no vision spend
+       → --dry-run: no network; counts the distinct place names still needing an
+         uncached lookup, i.e. what to pass to --geocode-uncached-max
+
 gpsify review <job_id> [--port 8765]
        → opens http://127.0.0.1:8765  (loopback only; no LAN flag)
 
@@ -694,6 +699,21 @@ If a single `propose` run would need **more than 50 uncached** public-Nominatim 
 
 **Geocode primary only.** Do not geocode the up-to-3 candidates during `propose`. The review UI geocodes a candidate when the user clicks it (same cache, same 1 rps).
 
+#### Filling pins the cap left behind (`gpsify geocode`)
+
+The geocoder is the only automatic pin source, so a run that stops at the uncached cap leaves `pin_source=none` proposals that a bare `accept` cannot use (`add_decision` rejects them). Those photos are not lost, but the only ways forward would be pinning each by hand in the review UI or `propose --force`, which re-bills the vision call for every photo just to redo the geocoding.
+
+`gpsify geocode <job_id>` is the geocode half of `propose` on its own. It reads the stored `VisionGuess` back out of `proposal.raw_json`, queries the primary place name against the *current* `geocoder_url`, and appends a new `proposal` row with the pin. No vision provider is constructed and no token is spent.
+
+Normative rules:
+
+- **Same gate as propose.** A photo is eligible only when `should_geocode` would have queried it, so a refusal, an empty primary, or a house-address string is never re-sent (K10 holds unchanged).
+- **Never demotes.** A pin can only raise `ui_rank` (`geocode_score` 0.2 → 0.6/1.0), so a photo may move `refused` → `proposed` when the missing pin was what pushed it under the cutoff. It never moves the other way.
+- **No churn.** A photo that stays unpinned (capped again, or a real miss) keeps its existing row; an identical proposal is never appended.
+- **Zero token columns.** The appended row records what *this* pass cost, which is no vision tokens. The superseded row keeps the counts of the call that produced the guess, so a sum over `proposal` rows still totals real vision spend.
+- **Cached misses stay missed.** The cache is keyed by place/country/lang, not by geocoder, so a name already recorded as a miss is not re-queried after switching `geocoder_url` until that cache entry is cleared. Names stopped by the cap were never queried and so were never cached.
+- `--dry-run` reads the cache and opens no socket, reporting the number of distinct place names still needing an uncached lookup — the number to pass to `--geocode-uncached-max`.
+
 #### `normalize(place)` (cache key)
 
 Cache key = `normalize(place) + "|" + (country_code or "") + "|" + geocode_lang`.
@@ -1068,7 +1088,7 @@ JSON exports (`gpsify status --json`) are derived. SQLite is the source of truth
 | xAI 429 / 5xx / timeout | retry 3× (2s/8s/30s) then `error`; batch continues |
 | Provider content policy (xAI `refusal`, Gemini `blockReason` / blocked `finishReason`) | `refused` with `refusal=policy_refusal`; no pin; terminal, so only `--force` re-sends it |
 | Empty / unparsable body | `error`; retry-eligible on the next `propose` |
-| Public Nominatim would exceed uncached cap | stop further public lookups; `pin_source=none` |
+| Public Nominatim would exceed uncached cap | stop further public lookups; `pin_source=none`; `gpsify geocode` fills them in later without re-spending vision |
 | Nominatim 429 / timeout | backoff; use cache; else `pin_source=none` |
 | House-address / privacy_sensitive | never geocode |
 | Source sha256 changed before propose | do not send; `error` |

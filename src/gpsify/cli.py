@@ -16,7 +16,7 @@ from gpsify.apply import ApplyError, run_apply
 from gpsify.config import load_settings
 from gpsify.geocode import GeocodeConfigError, require_geocoder_ready
 from gpsify.ingest import IngestError, run_ingest
-from gpsify.propose import ProposeError, run_propose
+from gpsify.propose import ProposeError, run_geocode, run_propose
 from gpsify.review import REVIEW_HOST, ReviewError, create_app, list_low_rank_photos, serve_review
 from gpsify.status import StatusError, format_job_list, format_status, job_status, list_job_entries, run_clean
 from gpsify.store import DecisionError, JobRepo, StoreError
@@ -143,6 +143,43 @@ def propose(
         typer.echo(f"warning: {warning}", err=True)
     if summary.error:
         raise typer.Exit(code=1)
+
+
+@app.command()
+def geocode(
+    job_id: str = typer.Argument(..., help="Job UUID from ingest."),
+    limit: int | None = typer.Option(
+        None, "--limit", help="Max unpinned proposals to geocode this run."
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="No network; count the place names that still need an uncached lookup.",
+    ),
+    geocode_uncached_max: int = typer.Option(
+        50,
+        "--geocode-uncached-max",
+        help="Public Nominatim uncached lookup cap for this run.",
+    ),
+) -> None:
+    """Geocode proposals left at pin_source=none. No vision call, no vision spend."""
+    settings = load_settings()
+    try:
+        summary = asyncio.run(
+            run_geocode(
+                job_id,
+                settings=settings,
+                limit=limit,
+                dry_run=dry_run,
+                geocode_uncached_max=geocode_uncached_max,
+                progress=lambda message: typer.echo(message),
+            )
+        )
+    except (ProposeError, StoreError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    for warning in summary.warnings:
+        typer.echo(f"warning: {warning}", err=True)
 
 
 @app.command()

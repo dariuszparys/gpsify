@@ -39,9 +39,10 @@ Exit codes: `0` ok · `1` partial (some photos errored/failed) · `2` config or 
 
 ```
 ingest → propose → review (or decide) → apply → undo
+                ↳ geocode (fills pins the uncached cap skipped; no vision spend)
 ```
 
-`ingest` walks and classifies a folder, hashes every file, reads EXIF in batched `exiftool` calls, and builds time+folder clusters. `propose` sends a lazily built 1280px preview to the selected vision provider (`--provider xai|gemini`), geocodes the returned *place name*, reconciles the two coordinate sources, and writes a `proposal` row. `review`/`decide` write a `decision` row. `apply` writes GPS from that decision. `undo` reverses it from a full-file backup.
+`ingest` walks and classifies a folder, hashes every file, reads EXIF in batched `exiftool` calls, and builds time+folder clusters. `propose` sends a lazily built 1280px preview to the selected vision provider (`--provider xai|gemini`), geocodes the returned *place name*, reconciles the two coordinate sources, and writes a `proposal` row. `review`/`decide` write a `decision` row. `apply` writes GPS from that decision. `undo` reverses it from a full-file backup. `geocode` (`run_geocode`, also in `propose.py`) re-runs only the geocode half for proposals left at `pin_source=none`, reading the stored `VisionGuess` back out of `proposal.raw_json` so no vision call is repeated.
 
 Modules map one-to-one onto those stages (`ingest.py`, `propose.py`, `apply.py`, `undo.py`, `status.py`), with `media.py` (decode/transpose/resize), `exif.py` (all `exiftool` read and write), `cluster.py`, `reconcile.py`, plus the `providers/`, `geocode/`, `store/`, and `review/` packages.
 

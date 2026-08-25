@@ -8,6 +8,11 @@ proposal rows. ``--dry-run`` is network-free (planned calls; cache reads allowed
 geocode counters, refusal histogram) is cumulative for the life of the job, so a
 run that plans nothing cannot zero what an earlier run really spent. This run
 alone is kept under ``propose.last_run``.
+
+``run_geocode`` is the second entrypoint here: the geocode half of propose on
+its own, for proposals left at ``pin_source=none`` by the uncached cap. It reads
+the stored ``VisionGuess`` back out of ``proposal.raw_json`` and never calls a
+vision provider, so filling in pins costs no tokens.
 """
 
 from __future__ import annotations
@@ -23,6 +28,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Never, TextIO
 
+from pydantic import ValidationError
+
 from gpsify.config import Settings
 from gpsify.exif import classify_media, is_processable
 from gpsify.geocode import (
@@ -33,6 +40,7 @@ from gpsify.geocode import (
     GeocodeConfigError,
     GeocodeService,
     Geocoder,
+    cache_key,
     geocode_cache_path,
     is_public_nominatim_url,
     require_geocoder_ready,
@@ -48,7 +56,7 @@ from gpsify.providers import (
     XaiGrokProvider,
 )
 from gpsify.providers.xai_grok import PROMPT_VERSION
-from gpsify.reconcile import ReconcileResult, geocode_and_reconcile
+from gpsify.reconcile import ReconcileResult, geocode_and_reconcile, result_from_lookup, should_geocode
 from gpsify.store import JobRepo, StoreError, job_dir
 from gpsify.types import (
     ALLOWED_VISION_PROVIDERS,
@@ -402,6 +410,29 @@ class ProposeSummary:
     planned_relpaths: list[str] = field(default_factory=list)
 
 
+@dataclass
+class GeocodeSummary:
+    """One ``run_geocode`` pass. No vision call happens, so there is no USD line.
+
+    ``cold_places``/``distinct_places`` are filled by ``--dry-run`` only: they
+    answer "what should I pass to ``--geocode-uncached-max``?" without spending
+    a lookup to find out.
+    """
+
+    job_id: str
+    planned: int = 0
+    pinned: int = 0
+    still_unpinned: int = 0
+    unrefused: int = 0
+    dry_run: bool = False
+    cache_hits: int = 0
+    uncached_lookups: int = 0
+    distinct_places: int = 0
+    cold_places: int = 0
+    warnings: list[str] = field(default_factory=list)
+    planned_relpaths: list[str] = field(default_factory=list)
+
+
 def _eligible_statuses(*, force: bool) -> frozenset[PhotoStatus]:
     base = {PhotoStatus.pending, PhotoStatus.error}
     if force:
@@ -630,6 +661,318 @@ def _select_photos(
     if limit is not None:
         selected = selected[:limit]
     return selected
+
+
+async def run_geocode(
+    job_id: str,
+    *,
+    settings: Settings,
+    limit: int | None = None,
+    dry_run: bool = False,
+    geocode_uncached_max: int = DEFAULT_UNCACHED_MAX,
+    geocoder: Geocoder | None = None,
+    progress: ProgressFn | None = None,
+) -> GeocodeSummary:
+    """Fill pins for proposals that have a place name but ``pin_source=none``.
+
+    The geocoder is the only automatic pin source, so a propose run that hit the
+    uncached cap (or a geocoder outage) leaves proposals a bare ``accept``
+    cannot use. This re-runs *only* that half of propose against the current
+    ``geocoder_url``, reading the stored ``VisionGuess`` back out of
+    ``proposal.raw_json`` and spending nothing on vision.
+
+    Refusals, empty primaries, and house-address strings are never queried
+    (K10). A pin can only raise ``ui_rank``, so a photo may move ``refused`` →
+    ``proposed``; this pass never moves one the other way. Photos that stay
+    unpinned keep their existing proposal row rather than gaining an identical
+    one. A place name the cache already recorded as a miss stays a miss until
+    that cache entry is cleared, switched geocoder or not.
+    """
+    if limit is not None and limit < 1:
+        raise ProposeError("--limit must be >= 1")
+    try:
+        require_geocoder_ready(settings)
+    except GeocodeConfigError as exc:
+        raise ProposeError(str(exc)) from exc
+
+    data_dir = settings.data_dir
+    root = job_dir(data_dir, job_id)
+    lock = JobExclusiveLock(root / LOCK_FILENAME)
+    lock.acquire()
+    repo: JobRepo | None = None
+    cache: GeocodeCache | None = None
+    nominatim: NominatimGeocoder | None = None
+    log_handle: TextIO | None = None
+    try:
+        try:
+            repo = await JobRepo.open(data_dir, job_id)
+        except StoreError as exc:
+            raise ProposeError(str(exc)) from exc
+        job = await repo.get_job()
+        if job is None:
+            raise ProposeError(f"job row missing for {job_id}")
+        photos = await repo.list_photos()
+        current_by_photo = {
+            str(row["photo_id"]): row for row in await repo.list_current_proposals()
+        }
+        selected = _select_unpinned(photos, current_by_photo, limit=limit)
+        summary = GeocodeSummary(
+            job_id=job_id,
+            planned=len(selected),
+            dry_run=dry_run,
+            planned_relpaths=[str(photo["relpath"]) for photo, _, _ in selected],
+        )
+        cache = await GeocodeCache(geocode_cache_path(data_dir)).open()
+        if dry_run:
+            await _count_cold_places(cache, selected, summary, lang=settings.geocode_lang)
+            _emit(
+                progress,
+                f"dry-run: {summary.planned} unpinned proposals, "
+                f"{summary.distinct_places} distinct place names, "
+                f"{summary.cold_places} need an uncached lookup (no geocoder HTTP)",
+            )
+            return summary
+
+        resolved_geocoder, nominatim = _resolve_geocoder(settings, geocoder)
+        cap_uncached = is_public_nominatim_url(settings.geocoder_url) and not isinstance(
+            resolved_geocoder, FakeGeocoder
+        )
+        service = GeocodeService(
+            resolved_geocoder,
+            cache,
+            lang=settings.geocode_lang,
+            uncached_max=geocode_uncached_max,
+            cap_uncached=cap_uncached,
+        )
+        log_dir = root / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_handle = (log_dir / "propose.log").open("a", encoding="utf-8")
+        hint = job["hint"]
+        # Sequential: every geocoder worth pointing at this is rate-limited, and
+        # a cache hit has no latency worth hiding behind concurrency.
+        for photo, proposal, guess in selected:
+            await _regeocode_one(
+                repo,
+                photo=photo,
+                proposal=proposal,
+                guess=guess,
+                photos=photos,
+                current_by_photo=current_by_photo,
+                service=service,
+                summary=summary,
+                hint=hint,
+                log_handle=log_handle,
+                progress=progress,
+            )
+        if service.cap_stopped:
+            summary.warnings.append(PUBLIC_NOMINATIM_CAP_WARNING)
+            _emit(progress, f"warning: {PUBLIC_NOMINATIM_CAP_WARNING}")
+        summary.cache_hits = service.cache_hits
+        summary.uncached_lookups = service.uncached_lookups
+        await _write_geocode_stats(repo, summary=summary)
+        _emit(
+            progress,
+            f"{summary.pinned}/{summary.planned} pinned, "
+            f"{summary.still_unpinned} still unpinned, "
+            f"{summary.unrefused} un-refused",
+        )
+        return summary
+    finally:
+        if log_handle is not None:
+            log_handle.close()
+        if cache is not None:
+            await cache.close()
+        if nominatim is not None:
+            await nominatim.aclose()
+        if repo is not None:
+            await repo.close()
+        lock.release()
+
+
+Unpinned = tuple[dict[str, Any], dict[str, Any], VisionGuess]
+
+
+def _select_unpinned(
+    photos: Sequence[dict[str, Any]],
+    current_by_photo: Mapping[str, dict[str, Any]],
+    *,
+    limit: int | None,
+) -> list[Unpinned]:
+    """Current proposals that carry a usable place name but no pin.
+
+    ``should_geocode`` is the same gate propose used, so a refusal or a
+    house-address string can never be re-sent to the geocoder (K10).
+    """
+    eligible = {PhotoStatus.proposed.value, PhotoStatus.refused.value}
+    selected: list[Unpinned] = []
+    for photo in photos:
+        if photo["status"] not in eligible:
+            continue
+        proposal = current_by_photo.get(str(photo["id"]))
+        if proposal is None or proposal.get("pin_source") != PinSource.none.value:
+            continue
+        try:
+            guess = VisionGuess.model_validate_json(str(proposal["raw_json"]))
+        except ValidationError:
+            continue
+        if should_geocode(guess) is not None:
+            continue
+        selected.append((photo, proposal, guess))
+    selected.sort(key=lambda item: str(item[0]["relpath"]))
+    if limit is not None:
+        selected = selected[:limit]
+    return selected
+
+
+async def _count_cold_places(
+    cache: GeocodeCache,
+    selected: Sequence[Unpinned],
+    summary: GeocodeSummary,
+    *,
+    lang: str,
+) -> None:
+    """Count distinct cache keys and how many are still cold (``--dry-run``)."""
+    keys = {
+        cache_key((guess.primary_place_name or "").strip(), guess.country_code, lang)
+        for _, _, guess in selected
+    }
+    cold = 0
+    for key in sorted(keys):
+        if not (await cache.get(key)).found:
+            cold += 1
+    summary.distinct_places = len(keys)
+    summary.cold_places = cold
+
+
+async def _regeocode_one(
+    repo: JobRepo,
+    *,
+    photo: dict[str, Any],
+    proposal: Mapping[str, Any],
+    guess: VisionGuess,
+    photos: Sequence[dict[str, Any]],
+    current_by_photo: dict[str, dict[str, Any]],
+    service: GeocodeService,
+    summary: GeocodeSummary,
+    hint: str | None,
+    log_handle: TextIO | None,
+    progress: ProgressFn | None,
+) -> None:
+    photo_id = str(photo["id"])
+    started = time.perf_counter()
+    lookup = await service.lookup_primary(
+        (guess.primary_place_name or "").strip(),
+        guess.country_code,
+        guess.granularity,
+    )
+    result = result_from_lookup(guess, lookup)
+    latency_ms = int((time.perf_counter() - started) * 1000)
+    if result.pin_source is PinSource.none:
+        # Capped again, or a real miss. Nothing was learned, so leave the
+        # existing row current instead of appending an identical one.
+        summary.still_unpinned += 1
+        return
+
+    proposed_siblings, gps_siblings = _cluster_context(photo, photos, current_by_photo)
+    rank = ui_rank(guess, result, proposed_siblings, gps_siblings)
+    # The job hint, not propose's ``--no-context`` view of it: this pass has no
+    # such flag, and the hint only feeds the weak-granularity arm, which the
+    # no-demote guard below keeps one-way anyway.
+    refuse = refuse_guess_reason(guess, album_hint=hint, rank=rank)
+    prior_status = str(photo["status"])
+    photo_status = PhotoStatus.refused if refuse is not None else PhotoStatus.proposed
+    if photo_status is PhotoStatus.refused and prior_status == PhotoStatus.proposed.value:
+        # A pin only ever raises ui_rank, so a demotion here could only come from
+        # cluster context that grew since propose ran. Never take back a proposal.
+        photo_status = PhotoStatus.proposed
+
+    dump = result.geocode.model_dump() if result.geocode is not None else {}
+    dump["skipped_geocode"] = result.skipped_geocode
+    dump["model_lat"] = result.model_lat
+    dump["model_lng"] = result.model_lng
+
+    await repo.insert_proposal(
+        photo_id=photo_id,
+        provider=str(proposal["provider"]),
+        model=str(proposal["model"]),
+        prompt_version=str(proposal["prompt_version"]),
+        raw_json=str(proposal["raw_json"]),
+        place_name=guess.primary_place_name,
+        granularity=guess.granularity.value,
+        model_confidence=guess.model_confidence,
+        ui_rank=rank,
+        refusal=guess.refusal.value,
+        pin_lat=result.pin_lat,
+        pin_lng=result.pin_lng,
+        pin_source=result.pin_source,
+        model_agree=None if result.model_agree is None else int(result.model_agree),
+        geocode_json=json.dumps(dump),
+        # No vision call happened. Zeroing the token columns keeps a sum over
+        # proposal rows equal to real vision spend; the superseded row still
+        # carries the counts of the call that produced this guess.
+        input_tokens=0,
+        output_tokens=0,
+        reasoning_tokens=0,
+        latency_ms=latency_ms,
+        current=True,
+    )
+    await repo.set_photo_status(photo_id, photo_status, error=None)
+    current_by_photo[photo_id] = {
+        "photo_id": photo_id,
+        "place_name": guess.primary_place_name,
+        "granularity": guess.granularity.value,
+        "model_confidence": guess.model_confidence,
+        "country_code": guess.country_code,
+    }
+    photo["status"] = photo_status.value
+
+    summary.pinned += 1
+    if prior_status == PhotoStatus.refused.value and photo_status is PhotoStatus.proposed:
+        summary.unrefused += 1
+    _log_event(
+        log_handle,
+        {
+            "level": "info",
+            "photo_id": photo_id,
+            "event": "geocode_fill",
+            "ms": latency_ms,
+            "place": guess.primary_place_name,
+            "ui_rank": round(rank, 4),
+            "pin_source": result.pin_source.value,
+            "status": photo_status.value,
+        },
+    )
+    _emit(
+        progress,
+        f"{summary.pinned}/{summary.planned} pinned, "
+        f"{summary.still_unpinned} still unpinned, "
+        f"{summary.unrefused} un-refused",
+    )
+
+
+async def _write_geocode_stats(repo: JobRepo, *, summary: GeocodeSummary) -> None:
+    """Merge this pass into ``job.stats_json`` under ``geocode``.
+
+    Cumulative like the ``propose`` block: a later pass that pins nothing must
+    not zero what an earlier one filled in.
+    """
+    existing, _ = _prior_stats(await repo.get_job())
+    prior_block = existing.get("geocode")
+    prior = prior_block if isinstance(prior_block, dict) else {}
+    run = {
+        "planned": summary.planned,
+        "pinned": summary.pinned,
+        "still_unpinned": summary.still_unpinned,
+        "unrefused": summary.unrefused,
+        "geocode_cache_hits": summary.cache_hits,
+        "geocode_uncached": summary.uncached_lookups,
+    }
+    existing["geocode"] = {
+        **{key: int(_prior_number(prior, key)) + value for key, value in run.items()},
+        "runs": int(_prior_number(prior, "runs")) + 1,
+        "last_run": run,
+    }
+    await repo.set_stats_json(json.dumps(existing))
 
 
 async def _process_one(

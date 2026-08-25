@@ -145,6 +145,7 @@ excluded. Enable billing on the key before pointing it at real photos.
 ```text
 gpsify ingest <folder> [--hint TEXT] [--recursive] [--relocate JOB_ID]
 gpsify propose <job_id> [--limit N] [--dry-run] [--no-context] [--provider xai|gemini] ...
+gpsify geocode <job_id> [--limit N] [--dry-run] [--geocode-uncached-max N]
 gpsify review <job_id> [--port 8765]
 gpsify decide <job_id> --photo ID --action accept|skip|accept_edited [--lat --lng]
 gpsify apply <job_id> [--out DIR] [--in-place] [--dry-run]
@@ -165,6 +166,26 @@ uv run gpsify apply <job_id>
 ```
 
 `apply` with no flags writes copies under `~/.gpsify/jobs/<id>/copies/`. `--in-place` requires `--i-mean-it` or a TTY confirm.
+
+### When propose stops at the geocoder cap
+
+The geocoder is the only automatic pin source, so a `propose` run that hits the
+public-Nominatim uncached cap leaves proposals at `pin_source=none` — the vision
+work is done, but a bare `accept` has no coordinate to copy. `gpsify geocode`
+finishes just that half against the current `geocoder_url`, re-using the guesses
+already stored. It never calls a vision provider, so it costs nothing:
+
+```bash
+uv run gpsify geocode <job_id> --dry-run          # how many uncached lookups are left?
+uv run gpsify geocode <job_id> --geocode-uncached-max 200
+```
+
+`geocoder_url` must point at a **Nominatim-shaped** endpoint. `NominatimGeocoder`
+is the only client implemented, so a self-hosted Nominatim works, but Photon,
+Mapbox, and Google do not — their responses parse to zero hits, which the
+pipeline records (and caches) as a miss rather than an error. A few hundred
+lookups at the built-in 1 rps is well inside personal use of the public
+instance; a self-hosted Nominatim switches the cap off entirely.
 
 ## Tests
 
