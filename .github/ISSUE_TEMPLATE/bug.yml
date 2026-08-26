@@ -1,0 +1,88 @@
+name: Bug report
+description: Something went wrong in ingest, propose, review, apply, or undo.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do **not** report a security issue here — use
+        [private vulnerability reporting](https://github.com/dariuszparys/gpsify/security/advisories/new)
+        instead.
+
+        A wrong location from the vision model is not a bug: guessing is the
+        premise of the tool, which is why nothing is written without your
+        approval. A bug is gpsify crashing, writing the wrong thing, or
+        refusing to do what it documented.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect, and what did you get instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands you ran, with keys redacted.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and version
+      placeholder: "macOS 15.5 (Apple Silicon)"
+    validations:
+      required: true
+
+  - type: input
+    id: exiftool
+    attributes:
+      label: exiftool version
+      description: "Output of `exiftool -ver`. Write \"not installed\" if it is missing — that alone explains a lot of HEIC and RAW behaviour."
+      placeholder: "13.10"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Vision provider
+      options:
+        - "xai (default)"
+        - gemini
+        - "not applicable — failed before propose"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: heic
+    attributes:
+      label: Did you install the heic extra?
+      description: "`uv sync --extra heic`. Without it, HEIC previews are skipped."
+      options:
+        - "Yes — uv sync --extra heic"
+        - "No — uv sync"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: formats
+    attributes:
+      label: Which formats are in the folder?
+      multiple: true
+      options: [JPEG, HEIC, PNG, RAW, Other]
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Command output or traceback
+      description: Redact API keys and anything you would rather not publish. Full home paths are fine to trim.
+      render: shell

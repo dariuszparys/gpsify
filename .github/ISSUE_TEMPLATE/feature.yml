@@ -1,0 +1,33 @@
+name: Feature request
+description: Suggest a change to how gpsify works.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check [`docs/decisions.md`](https://github.com/dariuszparys/gpsify/blob/main/docs/decisions.md)
+        first. Several obvious-sounding requests — auto-writing above a
+        confidence threshold, binding the review UI to the LAN, rewriting RAW
+        files in place, geocoder typeahead — are deliberate refusals rather than
+        missing work, and the reasoning is recorded there.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you hitting?
+      description: Describe the situation, not the solution you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like it to do?
+    validations:
+      required: true
+
+  - type: input
+    id: decision
+    attributes:
+      label: Does this touch a numbered decision (K1–K18)?
+      placeholder: "e.g. K10, or \"I don't think so\""
