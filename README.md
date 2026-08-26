@@ -8,9 +8,7 @@ Visual geolocation of untagged photos. gpsify proposes a location from pixels, s
 
 This repository is a macOS-first, local-first CLI plus a localhost review UI. The safety rails it will not cross — and the frozen SQLite schema behind them — are in [`docs/decisions.md`](docs/decisions.md).
 
-<!-- Screenshot of the review grid goes here, e.g.:
-     ![The gpsify review grid](docs/images/review-grid.png)
-     Run `gpsify review <job>` on a real album and capture the browser window. -->
+![The gpsify review grid](docs/images/review-grid.png)
 
 ## Status
 
