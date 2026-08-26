@@ -1,4 +1,4 @@
-"""xAI grok-4.6 vision wrapper (PR 6).
+"""xAI grok-4.6 vision wrapper.
 
 Builds an OpenAI-compatible Chat Completions request at ``https://api.x.ai/v1``.
 Every image call MUST set ``store=False`` / ``store_messages=False`` and an

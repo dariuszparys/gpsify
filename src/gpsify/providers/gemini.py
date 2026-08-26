@@ -1,4 +1,4 @@
-"""Google Gemini vision wrapper (PR 10, post-v1 second provider).
+"""Google Gemini vision wrapper: the alternative to the default xAI provider.
 
 Builds a ``generateContent`` request against the Gemini Developer API. Shares
 ``PROMPT_V1`` and ``format_user_message`` with the xAI wrapper on purpose: a
@@ -303,7 +303,7 @@ def _as_int(*values: Any) -> int:
 
 
 class GeminiProvider:
-    """Post-v1 second provider. Fresh request per photo; no session reuse."""
+    """The alternative provider. Fresh request per photo; no session reuse."""
 
     name = "gemini"
 

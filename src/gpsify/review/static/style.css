@@ -1,4 +1,4 @@
-/* gpsify review — design tokens + layout (PR 12).
+/* gpsify review — design tokens + layout.
    Dark only, on purpose: a neutral surround is how you judge a photo, and it is
    why every editor that does this for a living is dark. `color-scheme: dark`
    also keeps form controls from rendering light-on-light. */

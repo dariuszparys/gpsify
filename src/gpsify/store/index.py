@@ -6,7 +6,7 @@ Resume key = canonical root path + ``options_hash`` (SHA-256 of canonical JSON
 Two simultaneous inserts of the same key: the ``UNIQUE`` constraint wins and
 the second caller opens the existing ``job_id``.
 
-``resolve_job_handle`` (PR 11) is the CLI's read side of that index: it turns a
+``resolve_job_handle`` is the CLI's read side of that index: it turns a
 UUID, a folder path, or ``last`` into a ``job_id`` so no command makes the user
 retype the UUID ``ingest`` printed. It never registers or mutates a row.
 """

@@ -1,4 +1,4 @@
-"""VisionProvider protocol, call-option contract, and fake provider (PR 6)."""
+"""VisionProvider protocol, call-option contract, and fake provider."""
 
 from __future__ import annotations
 
@@ -25,8 +25,8 @@ class VisionBlockedError(VisionParseError):
     """The provider's safety filter blocked this image. Terminal, not an error.
 
     Re-sending the same pixels is billed and blocked again, so ``propose`` maps
-    this to ``refused`` / ``policy_refusal`` (design.md failure table) rather
-    than ``error``, keeping the photo out of the retry-eligible set.
+    this to ``refused`` / ``policy_refusal`` rather than ``error``, keeping
+    the photo out of the retry-eligible set.
     """
 
 

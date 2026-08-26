@@ -1,11 +1,11 @@
-"""Folder ingest: walk, classify, hash, batched EXIF, cluster, upsert (PR 3).
+"""Folder ingest: walk, classify, hash, batched EXIF, cluster, upsert.
 
 Creates or resumes a job via the global index. Re-ingest follows the design
 table (same sha256 keeps history; different sha256 resets current proposal
 and decision; missing paths are marked ``missing``). ``--relocate`` rebinds
 ``root_canonical`` and matches existing rows by sha256.
 
-HEIC decode and RAW preview extract live in ``media.py`` (PR 4) and are not
+HEIC decode and RAW preview extract live in ``media.py`` and are not
 run here — ingest never writes ``previews/`` or ``thumbs/``. This module never
 writes GPS.
 

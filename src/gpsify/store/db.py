@@ -8,7 +8,7 @@ per job, readers allowed.
 ``PRAGMA user_version=1`` ships the **complete** v1 schema. Later PRs do not
 add columns. Additive migrations only after v1.
 
-Photo status strings are ``gpsify.types.PhotoStatus`` (PR 1 types module).
+Photo status strings are ``gpsify.types.PhotoStatus``.
 This package persists those values; it does not redefine the enum.
 """
 
@@ -54,7 +54,7 @@ def utc_now_iso() -> str:
     )
 
 
-# Complete v1 schema from docs/design.md. Later PRs must not add columns.
+# Complete v1 schema; see docs/decisions.md. Frozen — do not add columns.
 JOB_SCHEMA = """
 CREATE TABLE job (
   id TEXT PRIMARY KEY,

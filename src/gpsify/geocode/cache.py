@@ -1,4 +1,4 @@
-"""SQLite geocode cache keyed by normalize(place)|country|lang (PR 5)."""
+"""SQLite geocode cache keyed by normalize(place)|country|lang."""
 
 from __future__ import annotations
 

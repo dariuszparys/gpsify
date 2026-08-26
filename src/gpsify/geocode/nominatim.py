@@ -1,8 +1,8 @@
-"""Nominatim-shaped HTTP geocoder (PR 5).
+"""Nominatim-shaped HTTP geocoder.
 
 Speaks the public Nominatim search JSON at ``geocoder_url`` so a self-hosted
 Nominatim (or any compatible endpoint) is a config change, not a code change.
-Photon / Mapbox / Google adapters are not in this slice.
+Photon / Mapbox / Google adapters are not implemented.
 
 Every request sets an identifiable User-Agent. Stock HTTP-library UAs are
 forbidden. Public Nominatim is rate-limited to 1 request/second.

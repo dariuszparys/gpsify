@@ -1,4 +1,4 @@
-"""Status rollup and preview/thumb cleanup (PR 9).
+"""Status rollup and preview/thumb cleanup.
 
 ``gpsify status --json`` reads ``job.stats_json`` plus live photo counts.
 ``gpsify clean`` deletes ``previews/`` and ``thumbs/`` only; sqlite and

@@ -1,12 +1,10 @@
-"""Lazy JPEG previews and thumbs (PR 4).
+"""Lazy JPEG previews and thumbs.
 
 Ingest never writes ``previews/`` or ``thumbs/``. Propose and the review UI
 call this module just-in-time. Pipeline: decode (HEIC primary still, RAW
 embedded JPEG via ``exiftool -b``) → ``ImageOps.exif_transpose`` → long-edge
 resize → JPEG quality 85 / 4:2:0. Originals are never mutated. RAW containers
-are never opened as images and never sent.
-
-Apply writes still wait for PR 8.
+are never opened as images and never sent. This module never writes GPS.
 """
 
 from __future__ import annotations

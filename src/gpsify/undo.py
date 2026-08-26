@@ -1,4 +1,4 @@
-"""Undo GPS writes from backup / dest deletion (PR 8).
+"""Undo GPS writes from backup / dest deletion.
 
 JPEG/HEIC/PNG: restore the full-file backup over an in-place dest, or delete
 the copy-mode dest. RAW: delete or restore the sibling XMP sidecar only; never

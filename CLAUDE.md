@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `gpsify` proposes GPS coordinates for untagged photos from their pixels and writes tags **only after a human accepts**. macOS-first, local-first: a Typer CLI plus a loopback-only Starlette review UI. Python 3.12+.
 
-[`docs/design.md`](docs/design.md) is the spec, not background reading. It carries the numbered decisions (K1–K17), the complete SQLite schema, the per-file apply algorithm, and the PR plan. Module docstrings reference PR numbers from that plan. Behavior changes belong in the design doc too; the doc's product questions are resolved and final.
+[`docs/decisions.md`](docs/decisions.md) is not background reading. It carries the numbered decisions (K1–K18) that the invariants below cite by number, plus the complete SQLite schema. A behavior change that touches a K-decision belongs in that file too.
 
 ## Commands
 
@@ -82,7 +82,7 @@ These are safety rails, each traceable to a K-decision in the design doc. Breaki
 
 ## Conventions
 
-- Every module starts with `from __future__ import annotations` and a docstring naming its PR slice and normative rules.
+- Every module starts with `from __future__ import annotations` and a docstring naming its role and normative rules.
 - Each stage exposes one `async def run_*(...)` entrypoint returning a summary dataclass, plus a module-local `*Error` exception. `cli.py` is a thin shell: `asyncio.run(run_x(...))`, catch `(XError, StoreError)`, `typer.echo(f"error: {exc}", err=True)`, `raise typer.Exit(code=2)`. Long-running commands take a `progress=lambda message: typer.echo(message)` callback rather than printing themselves.
 - Exhaustive `match` over enums ends with `case _: _unreachable(value)` where `_unreachable(value: Never) -> Never`. Keep that arm when adding enum members so type checking catches the gap.
 - `gpsify.types` holds the shared Pydantic wire contracts (`VisionGuess`, `GeoHit`, `PromptContext`, `VisionCallOptions`) and the string enums persisted to SQLite. The store persists those values and does not redefine them.
@@ -90,4 +90,4 @@ These are safety rails, each traceable to a K-decision in the design doc. Breaki
 - `GPSIFY_DRY_RUN=1` blocks live HTTP (xAI, geocoder) and `exiftool` writes. `tests/conftest.py` sets it for the whole suite; only `@pytest.mark.writes_exif` lifts it, and `@pytest.mark.live` marks tests that need real APIs.
 - Tests build fixtures with `tests/jpeg_factory.py` (never write GPS onto checked-in fixtures), drive the pipeline through `FakeVisionProvider` / `FakeGeocoder`, and exercise apply via `repo.add_decision` + `run_apply` rather than HTTP.
 - Never log base64, image bytes, or full home paths. Log `photo_id`, status, place name, `ui_rank`.
-- Commits are conventional-commit style, one per PR-plan slice (`feat: xAI grok-4.6 vision proposals (#6)`).
+- Commits are conventional-commit style, one self-contained change per commit (`feat: xAI grok-4.6 vision proposals`).

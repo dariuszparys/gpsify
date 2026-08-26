@@ -1,4 +1,4 @@
-"""Typer CLI. ``run`` and job handles land in this slice (PR 11).
+"""Typer CLI: a thin shell over each stage's ``run_*`` entrypoint.
 
 Every command that takes a job accepts a ``job_id`` UUID, a folder path, or
 ``last`` — see ``store.index.resolve_job_handle``. ``ingest --relocate`` is the
@@ -33,7 +33,7 @@ app = typer.Typer(
     name="gpsify",
     help=(
         "Propose GPS from photo pixels; write tags only after a human accepts. "
-        "See docs/design.md."
+        "See docs/decisions.md."
     ),
     no_args_is_help=True,
     pretty_exceptions_enable=False,

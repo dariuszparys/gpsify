@@ -1,4 +1,4 @@
-"""Starlette review API + static Leaflet UI (PR 7; grid + selection apply, PR 12).
+"""Starlette review API + static Leaflet UI, with grid and selection apply.
 
 Binds ``127.0.0.1`` only. Thumbs and previews are lazy and looked up by
 ``photo_id`` UUID — originals are never mounted. No EXIF writes.

@@ -1,8 +1,8 @@
-"""Geocode the primary place name and reconcile model hints with the geocoder pin (PR 5).
+"""Geocode the primary place name and reconcile model hints with the geocoder pin.
 
 Pin shown to the user is always the geocoder lat/lng. Model ``lat_hint``/``lng_hint``
 are compared via haversine; disagreement is recorded, never averaged. Candidates
-are not geocoded in this slice.
+are never geocoded.
 """
 
 from __future__ import annotations

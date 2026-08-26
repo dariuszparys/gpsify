@@ -1,4 +1,4 @@
-"""Localhost review UI (PR 7). Loopback only; no EXIF writes."""
+"""Localhost review UI. Loopback only; no EXIF writes."""
 
 from gpsify.review.app import (
     CLUSTER_N_CAP,

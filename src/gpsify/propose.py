@@ -1,4 +1,4 @@
-"""Vision + geocode propose loop (PR 6). Does not write GPS.
+"""Vision + geocode propose loop. Does not write GPS.
 
 On start: crash-repair ``proposing`` → ``pending``, take ``jobs/<id>/propose.lock``.
 Lazy previews, xAI (or a fake provider in tests), primary-only geocode, UI rank,
@@ -1062,8 +1062,8 @@ async def _process_one(
         )
     except VisionBlockedError as exc:
         # The provider's safety filter blocked these pixels. Terminal: a re-send
-        # is billed and blocked identically, so this is a refusal (design.md
-        # failure table), not ``error`` — which propose retries by default.
+        # is billed and blocked identically, so this is a refusal, not
+        # ``error`` — which propose retries by default.
         # The wrapper raises before parsing usage, so a blocked call is missing
         # from est_usd by its prompt tokens.
         latency_ms = int((time.perf_counter() - started) * 1000)

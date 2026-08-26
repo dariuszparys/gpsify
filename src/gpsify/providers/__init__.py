@@ -1,4 +1,4 @@
-"""Vision providers. v1 default is xAI grok-4.6; Gemini is the post-v1 second provider (PR 10)."""
+"""Vision providers. The default is xAI grok-4.6; Gemini is the alternative."""
 
 from gpsify.providers.base import (
     FakeVisionProvider,

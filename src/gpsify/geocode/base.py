@@ -1,4 +1,4 @@
-"""Geocoder protocol, fake provider, OSM attribution, and lookup orchestration (PR 5)."""
+"""Geocoder protocol, fake provider, OSM attribution, and lookup orchestration."""
 
 from __future__ import annotations
 

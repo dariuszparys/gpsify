@@ -15,7 +15,7 @@ v1 ships SpaceXAI `grok-4.6` only (design K2). This note compares that default t
 
 **Gemini 2.5 Flash** is the best cheap hosted pick for this app. **Gemini 2.5 Pro** is the most accurate on public photo-geolocation benches. Self-hosting can name city and country on typical travel photos; it is not a street-level substitute for the current Grok path.
 
-1. Keep Grok for v1 dogfood if one provider is enough.
+1. Keep Grok if one provider is enough.
 2. Add Gemini 2.5 Flash next if the goal is cheaper with similar-or-better geo quality (same schema, roughly 3–8× lower list cost, second on the benches). Use Pro only for the accuracy ceiling at Grok-like spend.
 3. Do not switch the default to Flash-Lite, GPT-5.6 luna, or a 4B local model without a bake-off on known photos. The documented gap is geo reasoning, not JSON emission.
 4. Self-host Qwen3-VL-30B only if photos must stay on-machine and city-level is enough. Pair it with Nominatim (already in the pipeline) rather than trusting local lat/lng.
@@ -139,7 +139,7 @@ v1 propose must call a vision model (not a text-only LLM) with a resized, orient
 
 That clue set is exactly where closed–open gaps are largest. Self-hosted Qwen3-VL is a workable cheap path for coarse city/country on tourist-like photos; it is not shown to deliver gpsify-class street-level sign/architecture pins without extra map tools, and the smallest local dense sizes are country-name predictors with a large urban–rural gap.
 
-gpsify now ships that bake-off as `scripts/bakeoff.py` (PR 10): it scores any model against photos whose GPS you already have, so the answer is measured on your own album rather than inferred from the tables above. What follows is the prior it replaces. Local VLM and cheap indoor-triage models are deferred in `docs/design.md` (alternatives 6 and 8) for setup and second-provider cost, not a failed capability test. A small bake-off on a known album (Flash vs Grok, record real `usage`) would beat any of these papers for this repo.
+gpsify now ships that bake-off as `scripts/bakeoff.py`: it scores any model against photos whose GPS you already have, so the answer is measured on your own album rather than inferred from the tables above. What follows is the prior it replaces. Local VLM and cheap indoor-triage models are deferred for setup and second-provider cost, not a failed capability test. A small bake-off on a known album (Flash vs Grok, record real `usage`) would beat any of these papers for this repo.
 
 ---
 
@@ -176,7 +176,7 @@ gpsify now ships that bake-off as `scripts/bakeoff.py` (PR 10): it scores any mo
 - Grainge et al., geolocation capabilities of generative VLMs — [arXiv:2508.19967](https://arxiv.org/html/2508.19967)
 - McAfee Labs Safer Summer Travel Report (local Qwen3-VL 30B 91%) — [McAfee blog](https://www.mcafee.com/blogs/mcafee-news/ai-travel-photo-location-scams-geolocation-research/)
 - Grok 4.6 pricing — [docs.x.ai](https://docs.x.ai/developers/models/grok-4.6)
-- gpsify design — [`docs/design.md`](../design.md)
+- gpsify decisions and schema — [`docs/decisions.md`](../decisions.md)
 - Claude vision token math — [Claude docs](https://platform.claude.com/docs/en/build-with-claude/vision)
 - OpenAI images and vision — [OpenAI API](https://developers.openai.com/api/docs/guides/images-vision)
 - Gemini Developer API pricing — [ai.google.dev](https://ai.google.dev/gemini-api/docs/pricing)

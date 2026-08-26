@@ -1,11 +1,11 @@
 """Batched EXIF / XMP read and GPS write.
 
-Read (PR 3): one ``exiftool -j -fast -n`` process per 200 files. If
+Read: one ``exiftool -j -fast -n`` process per 200 files. If
 ``exiftool`` is missing, fall back to Pillow / Piexif **per file** (JPEG only)
 and skip HEIC GPS detection with a warning. RAW sibling ``.xmp`` GPS is merged
 onto the RAW row when the sidecar exists.
 
-Write (PR 8): one ``exiftool -@ argfile`` of per-dest tag sets. JPEG/HEIC get
+Write: one ``exiftool -@ argfile`` of per-dest tag sets. JPEG/HEIC get
 EXIF+XMP; PNG gets XMP in-file; RAW gets a sibling ``.xmp`` only. Piexif is
 the JPEG-only test fallback; PNG/RAW XMP is written directly when exiftool is
 missing. ``GPSIFY_DRY_RUN=1`` blocks writes.

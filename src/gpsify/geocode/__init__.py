@@ -1,4 +1,4 @@
-"""Switchable geocoder, unique-string cache, and OSM attribution (PR 5)."""
+"""Switchable geocoder, unique-string cache, and OSM attribution."""
 
 from gpsify.geocode.base import (
     DEFAULT_UNCACHED_MAX,

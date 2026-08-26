@@ -1,4 +1,4 @@
-"""Write GPS from the current decision only (PR 8).
+"""Write GPS from the current decision only.
 
 Dest inspection runs before any ingest-hash abort so ``--in-place`` JPEG retry
 works after tags change the source bytes. ``photo.sha256`` stays the pre-tag
