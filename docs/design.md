@@ -111,6 +111,7 @@ Existing geotaggers (GeoSetter, ExifTool GUI, DigiKam, `osxphotos`) already writ
 | K15 | **Undo JPEG/HEIC/PNG from a full-file backup taken before `exiftool`. Undo RAW by deleting or restoring the XMP sidecar only.** | Never copy a multi-ten-MB RAW as an undo blob. Never hardlink. Never `-overwrite_original` on a RAW. |
 | K16 | **Review UI binds `127.0.0.1` only**; no `--i-understand-lan` in v1 | A LAN bind with no auth would publish thumbs and place guesses on the local network. Loopback is the trust boundary. |
 | K17 | **RAW write is sidecar-only** (`foo.CR2` → `foo.xmp`). Copies mode copies the RAW and writes the sidecar next to the copy. `--in-place` writes only the sidecar next to the original. | User decision 2026-08-12. Lightroom reads XMP sidecars; rewriting RAW containers is unsafe and unnecessary. |
+| K18 | **A grid selection is a cluster the human drew, and inherits K9's caps.** `POST /api/pin/apply` copies one accepted pin onto an arbitrary multi-select, which may span clusters. It shares `_apply_source_pin` with the cluster route: `proposed`-only candidates, an explicit id list where an extra id is a 400 rather than a silent drop, and a typed confirm at >30, all-undated, or >25% untimestamped. | A Lightroom-style grid makes bulk pinning easy, which is exactly why the rails must not be optional. Selecting by hand is not evidence the pin is right — 40 undated photos are as dangerous picked as clustered. **Accept** stays uncapped because each photo keeps its *own* pin; nothing is copied. |
 
 ---
 
@@ -844,26 +845,65 @@ v1 does **not** do visual embeddings or "same building" matching.
 
 ### Review UX
 
-Local page, no login, no analytics, **loopback only**.
+Local page, no login, no analytics, **loopback only**. Vanilla HTML/CSS/JS with no
+build step; Leaflet is vendored under `static/vendor/` so the page needs no CDN.
 
-**Layout**
+**Layout** (PR 12) — a grid, not a filmstrip. The photo the user is judging is one
+of many, so the grid is the primary surface and the full-size image is one keypress
+away rather than permanently occupying the middle of the screen.
 
-- Left: filmstrip of the current filter (`needs review` default), keyboard j/k.
-- Center: large preview (local thumb, orientation-corrected).
-- Right: Leaflet map with **© OpenStreetMap contributors** attribution (required), UI-rank badge, granularity, place name, clue list, candidate list (click → geocode that name), model-vs-geocoder warning.
-- Bottom bar: **Accept (a)** · **Skip (s)** · **Edit pin (e)** · **Apply to cluster (c)** · **Next**.
+- Top: brand, folder name, filter chips, a grid-size slider (96–320 px, persisted in
+  `localStorage`), and the shortcut sheet.
+- Left / centre: a resizable thumbnail grid with **sticky group headers**. Groups are
+  clusters, labelled in human terms — `Fri 12 Jul · 09:10–09:28 · album root · 7 photos`
+  — and never as "cluster". An undated group is labelled `⚠ No capture time`, because
+  that is the group the apply caps exist to protect. Tiles are square with
+  `object-fit: contain`: a cropped edge can hide the one sign the geolocation rests on.
+  Thumbs are `loading="lazy"` so a 2,000-photo grid does not render 2,000 JPEGs on
+  first paint.
+- Right: Leaflet map with **© OpenStreetMap contributors** attribution (required), then
+  UI-rank badge, place name, granularity, clue list, candidate list (click → geocode
+  that name), model-vs-geocoder warning, and the place-search box.
+- Bottom: selection count · **Accept (a)** · **Skip (s)** · **Edit pin (e)** ·
+  **Apply pin (g)**.
+- `Space` opens a full-viewport lightbox of `/api/preview/{id}`; arrows move, `Space`
+  or `Esc` closes. It shows the 1280 px preview — originals are never mounted, so a
+  high-DPI display upscales.
 
-**Accept (a):** `POST {action: accept}` with no coords. `add_decision` copies the current proposal pin. Disabled (and 400 if forced) when `pin_source=none` — user must Edit pin first.
+**Selection:** click selects one; `⌘`/`Ctrl`-click toggles; `⇧`-click extends a range
+over the rendered order; `⌘`/`Ctrl A` takes the whole filter; each group header offers
+`Select N`. The last-clicked photo is the **anchor**: it drives the inspector and owns
+the pin that Apply-pin copies.
 
-**Edit pin:** drag marker, or search box that fires **on Enter only** (no keystroke Nominatim). Saving an edited pin calls `add_decision(action=accept_edited, lat, lng)`.
+**Accept (a):** `POST {action: accept}` with no coords, once per selected photo.
+`add_decision` copies each photo's own current proposal pin. Uncapped by design —
+nothing is copied *between* photos. Disabled (and 400 if forced) when `pin_source=none`;
+the user must Edit pin first.
 
-**Apply to cluster:** open the member checklist (from `GET /api/clusters/{id}`), default-check `proposed` only, require explicit POST of `photo_ids`. Show the typed-confirm modal when the safety caps in the previous section trip.
+**Edit pin:** click the map or drag the marker, or use the search box, which fires **on
+Enter only** (no keystroke Nominatim). Edit mode is a visible armed state, not an
+invisible toggle. Saving calls `add_decision(action=accept_edited, lat, lng)`.
 
-**Filters:** needs review · low UI rank · refused · accepted · all.
+**Apply pin (g):** copies the anchor's accepted pin onto the rest of the selection via
+`POST /api/pin/apply` (K18). If the anchor has no decision yet, the UI accepts it first
+— that is what pressing the button meant. The confirm dialog states the count and how
+many targets lack a capture time, and demands the typed count when the caps trip. The
+client mirrors `batch_needs_confirm` for the dialog copy only; the server re-checks and
+400s regardless. Decisions are written with `action=cluster_apply` — the value already
+means "pin copied from another photo's current decision", and schema v1 is frozen.
+
+**Filters:** needs review · low confidence · refused · accepted · all. Only the active
+chip shows a count, taken from the list on screen: `low` is a `ui_rank` threshold rather
+than a status, so it cannot be derived from the job's status histogram without lying.
+
+**Empty state:** names the counts and prints the literal next command
+(`gpsify apply <folder>`), rather than rendering an empty grid.
 
 **Safety:** closing the tab does not write GPS. Only `gpsify apply` writes.
 
-Bind `127.0.0.1` only. There is **no** `--i-understand-lan` in v1. Do not expose the folder as a static mount of originals; serve thumbs via `/api/thumb/<photo_id>` looked up by UUID.
+Bind `127.0.0.1` only. There is **no** `--i-understand-lan` in v1. Do not expose the
+folder as a static mount of originals; serve thumbs via `/api/thumb/<photo_id>` looked
+up by UUID.
 
 ### How GPS is written (K12, K15)
 
@@ -1235,6 +1275,7 @@ class VisionProvider(Protocol):
 | GET | `/api/clusters/{id}` | members for apply-to-cluster checklist |
 | POST | `/api/photos/{id}/decision` | `{action, lat?, lng?}`. `skip`: no coords. `accept`: coords optional (server copies current proposal pin via `add_decision`; 400 if `pin_source=none`). `accept_edited`: lat/lng required. |
 | POST | `/api/clusters/{id}/apply` | `{source_photo_id, photo_ids: […]}`. Server copies finite lat/lng from the source decision; 400 if source has no coords. |
+| POST | `/api/pin/apply` | `{source_photo_id, photo_ids: […], confirm_n?}`. Same copy, for a selection that may span clusters (K18). Shares `_apply_source_pin` with the route above, so `proposed`-only candidates, extra-id 400, and the typed-confirm caps all still apply. |
 | POST | `/api/geocode` | `{q}` submit-on-Enter only; no prefix search |
 
 No CORS wildcard. No auth cookie (loopback is the trust boundary). JSON only. No `0.0.0.0` bind.
@@ -1547,6 +1588,15 @@ Incremental, each PR independently reviewable and mergeable on `main`. Later PRs
 - **Depends on:** PRs 3, 6, 7
 - **Status:** **shipped**.
 - **Changes:** `gpsify run <folder>` chains ingest → propose → review in one command and prints the `gpsify apply <folder>` follow-up; it writes no GPS, and K4 is untouched because review still gates every write. It **reports** a needed geocode pass instead of running one — the 50-uncached cap is an OSMF rail (K10) and routing around it silently would defeat the cap. `resolve_job_handle` turns a UUID, a folder path, or `last` into a `job_id` for every job-taking command, so the UUID `ingest` prints never has to be retyped; `ingest --relocate` still needs a literal UUID. Ambiguity (one folder, two `options_hash` values) resolves to the most recent ingest **and says so** rather than choosing silently. A UUID whose `job.sqlite` exists resolves with no index row, so a lost index orphans nothing. `JobIndex.list_jobs` breaks `last_ingest_at` ties on `rowid DESC` instead of `job_id`: timestamps are second-precision, and ordering by a random UUID made "most recent" non-deterministic.
+
+
+### PR 12 — Grid review UI and selection pin-apply (**post-v1**)
+
+- **Title:** `feat: lightroom-style review grid and selection pin apply`
+- **Files:** `src/gpsify/review/static/*`, `src/gpsify/review/app.py`, `tests/test_review_api.py`
+- **Depends on:** PR 7
+- **Status:** **shipped**.
+- **Changes:** The filmstrip-plus-huge-preview layout becomes a thumbnail grid with a size slider, sticky cluster group headers labelled in human terms, and `Space` for a full-viewport lightbox. `style.css` is rebuilt on tokens (spacing, type, radii, elevation, semantic surfaces) and commits to `color-scheme: dark` — the old `light dark` declared a light mode with no overrides behind it. The JS splits into `app.js` (entry, keyboard, search), `api.js`, `grid.js`, `map.js`; Leaflet 1.9.4 is vendored under `static/vendor/` so the page needs no CDN. New `POST /api/pin/apply` for multi-select pin copying (K18), sharing `_apply_source_pin` with the cluster route; `cluster_needs_confirm` generalises to `batch_needs_confirm(n, …)` with the cluster form kept as a wrapper. Fixed while restructuring: `loadPhotos` no longer snaps back to index 0 after every decision, pending pin coordinates no longer survive a photo change, the place name is state rather than DOM text, and edit mode is a visible armed state. The static-contract test now scans **every** first-party module for the Enter-only rule (`vendor/` excluded) and additionally forbids `.oninput`, so the K10 guard cannot be sidestepped by a module split or a property-style listener.
 
 
 Each PR includes tests for the new surface and keeps `gpsify --help` working. There is no path that writes GPS without a stored current decision.

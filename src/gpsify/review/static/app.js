@@ -1,379 +1,719 @@
-/* Review UI. Place search geocodes on Enter only; never on keystroke / typeahead. */
-(() => {
-  const state = {
-    photos: [],
-    index: 0,
-    filter: "needs_review",
-    job: null,
-    map: null,
-    pin: null,
-    ghost: null,
-    editMode: false,
-    cluster: null,
+/* gpsify review — entry point: state, actions, keyboard, place search.
+
+   Place search geocodes on Enter only; never on keystroke, never as typeahead
+   (K10, OSMF policy). Nothing here writes GPS — closing the tab writes nothing,
+   and only `gpsify apply` touches a file.
+
+   Two verbs that look alike and are not:
+     Accept    — every selected photo keeps its OWN proposal pin. Safe in bulk.
+     Apply pin — ONE photo's pin is copied onto the rest of the selection. That
+                 is the "one wrong church poisons 400 photos" case, so it goes
+                 through /api/pin/apply and inherits K9's caps. */
+
+import { api, previewUrl } from "./api.js";
+import { createMap } from "./map.js";
+import {
+  formatWhen,
+  groupPhotos,
+  paintSelection,
+  rankClass,
+  renderEmpty,
+  renderGrid,
+} from "./grid.js";
+
+const CLUSTER_N_CAP = 30;
+const UNSTAMPED_FRACTION = 0.25;
+const TILE_KEY = "gpsify.tileSize";
+const FILTER_ORDER = ["needs_review", "low", "refused", "accepted", "all"];
+
+const state = {
+  job: null,
+  filter: "needs_review",
+  photos: [],
+  order: [],
+  tiles: new Map(),
+  selection: new Set(),
+  anchorId: null,
+  rangeFromId: null,
+  editing: false,
+  pendingPin: null,
+  placeName: "",
+  map: null,
+  lightboxOpen: false,
+};
+
+const $ = (id) => document.getElementById(id);
+
+function setStatus(message, isError = false) {
+  const node = $("status-msg");
+  node.textContent = message || "";
+  node.classList.toggle("error", Boolean(isError && message));
+}
+
+function reportError(err) {
+  setStatus(String((err && err.message) || err), true);
+}
+
+const photoById = (id) => state.photos.find((p) => p.id === id) || null;
+const anchor = () => photoById(state.anchorId);
+
+// ---------------------------------------------------------------- selection
+
+function setSelection(ids, anchorId) {
+  setStatus("");
+  state.selection = new Set(ids);
+  state.anchorId = anchorId ?? (ids.length ? ids[ids.length - 1] : null);
+  state.rangeFromId = state.anchorId;
+  state.editing = false;
+  state.pendingPin = null;
+  paintSelection(state.tiles, state.selection, state.anchorId);
+  renderInspector();
+  renderActionBar();
+}
+
+function selectRangeTo(id) {
+  setStatus("");
+  const from = state.order.indexOf(state.rangeFromId);
+  const to = state.order.indexOf(id);
+  if (from < 0 || to < 0) return setSelection([id], id);
+  const [lo, hi] = from <= to ? [from, to] : [to, from];
+  const ids = state.order.slice(lo, hi + 1);
+  state.selection = new Set(ids);
+  state.anchorId = id;
+  state.editing = false;
+  state.pendingPin = null;
+  paintSelection(state.tiles, state.selection, state.anchorId);
+  renderInspector();
+  renderActionBar();
+}
+
+function toggle(id) {
+  const next = new Set(state.selection);
+  if (next.has(id) && next.size > 1) next.delete(id);
+  else next.add(id);
+  setSelection([...next], id);
+}
+
+function moveAnchor(delta) {
+  if (!state.order.length) return;
+  const at = state.order.indexOf(state.anchorId);
+  const next = state.order[Math.min(state.order.length - 1, Math.max(0, at + delta))];
+  if (!next) return;
+  setSelection([next], next);
+  const tile = state.tiles.get(next);
+  if (tile) tile.scrollIntoView({ block: "nearest" });
+  if (state.lightboxOpen) renderLightbox();
+}
+
+function columnsPerRow() {
+  const grid = $("grid-pane").querySelector(".grid");
+  if (!grid) return 1;
+  const cols = getComputedStyle(grid).gridTemplateColumns.split(" ").length;
+  return Math.max(1, cols);
+}
+
+// ---------------------------------------------------------------- rendering
+
+function renderFilters() {
+  $("job-name").textContent = state.job ? shortRoot(state.job.root_path) : "";
+  $("job-name").title = (state.job && state.job.root_path) || "";
+  for (const button of $("filters").querySelectorAll("button[data-filter]")) {
+    const active = button.dataset.filter === state.filter;
+    button.classList.toggle("active", active);
+    let count = button.querySelector(".count");
+    if (!count) {
+      count = document.createElement("span");
+      count.className = "count";
+      button.appendChild(count);
+    }
+    // Only the active filter gets a number, and it comes from the list on
+    // screen. `low` is a ui_rank threshold, not a status, so it cannot be
+    // derived from the job's status histogram without lying about it.
+    count.textContent = active ? String(state.photos.length) : "";
+  }
+}
+
+function shortRoot(path) {
+  const parts = String(path || "").split("/").filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : path || "";
+}
+
+function renderPhotos() {
+  const pane = $("grid-pane");
+  if (!state.photos.length) {
+    state.tiles = new Map();
+    state.order = [];
+    renderEmpty(pane, emptyCopy());
+    renderInspector();
+    renderActionBar();
+    return;
+  }
+  const groups = groupPhotos(state.photos);
+  state.order = groups.flatMap((g) => g.photos.map((p) => p.id));
+  state.tiles = renderGrid(pane, groups, {
+    onSelectGroup: (group) => setSelection(group.photos.map((p) => p.id), group.photos[0].id),
+  });
+  for (const [id, tile] of state.tiles) {
+    tile.addEventListener("click", (event) => {
+      if (event.shiftKey) selectRangeTo(id);
+      else if (event.metaKey || event.ctrlKey) toggle(id);
+      else setSelection([id], id);
+    });
+  }
+  if (!state.anchorId || !state.tiles.has(state.anchorId)) {
+    setSelection([state.order[0]], state.order[0]);
+  } else {
+    paintSelection(state.tiles, state.selection, state.anchorId);
+    renderInspector();
+    renderActionBar();
+  }
+}
+
+function emptyCopy() {
+  const root = (state.job && state.job.root_path) || "<folder>";
+  if (state.filter === "needs_review") {
+    return {
+      title: "Nothing left to review",
+      body: "Every photo in this job has a decision. Write the accepted pins to files with:",
+      command: `gpsify apply ${root}`,
+    };
+  }
+  return {
+    title: "No photos in this filter",
+    body: "Try another filter, or propose more photos first.",
+    command: null,
   };
+}
 
-  const $ = (id) => document.getElementById(id);
+function renderInspector() {
+  const photo = anchor();
+  const proposal = (photo && photo.proposal) || null;
 
-  async function api(path, options) {
-    const response = await fetch(path, options);
-    const text = await response.text();
-    let body = null;
+  if (!photo) {
+    $("place-name").textContent = "";
+    $("rank-badge").textContent = "—";
+    $("rank-badge").className = "badge";
+    $("meta").replaceChildren();
+    $("notice").classList.add("hidden");
+    $("clues-block").classList.add("hidden");
+    $("candidates-block").classList.add("hidden");
+    if (state.map) state.map.clear();
+    return;
+  }
+
+  state.placeName = (proposal && proposal.place_name) || "";
+  $("place-name").textContent = state.placeName || photo.relpath;
+
+  const rank = proposal ? proposal.ui_rank : null;
+  const badge = $("rank-badge");
+  badge.textContent = rank == null ? "—" : Number(rank).toFixed(2);
+  badge.className = `badge ${rankClass(rank)}`;
+
+  const meta = $("meta");
+  meta.replaceChildren();
+  for (const bit of [photo.relpath, formatWhen(photo.datetime_original), (proposal && proposal.granularity) || photo.status]) {
+    if (!bit) continue;
+    if (meta.childNodes.length) {
+      const sep = document.createElement("span");
+      sep.className = "sep";
+      sep.textContent = "·";
+      meta.appendChild(sep);
+    }
+    const span = document.createElement("span");
+    span.textContent = bit;
+    meta.appendChild(span);
+  }
+
+  const notice = $("notice");
+  notice.classList.remove("editing");
+  if (state.editing) {
+    notice.textContent = "Click the map or drag the pin, then Save pin.";
+    notice.classList.remove("hidden");
+    notice.classList.add("editing");
+  } else if (proposal && (proposal.model_agree === 0 || proposal.model_agree === false)) {
+    notice.textContent = "The model and the map search disagree. The dashed pin is the model's guess.";
+    notice.classList.remove("hidden");
+  } else if (proposal && proposal.refusal && proposal.refusal !== "none") {
+    notice.textContent = `The model refused this one: ${proposal.refusal.replace(/_/g, " ")}.`;
+    notice.classList.remove("hidden");
+  } else {
+    notice.classList.add("hidden");
+  }
+
+  const clues = (proposal && proposal.clues) || [];
+  $("clues-block").classList.toggle("hidden", clues.length === 0);
+  const clueList = $("clues");
+  clueList.replaceChildren();
+  for (const clue of clues) {
+    const li = document.createElement("li");
+    const kind = document.createElement("span");
+    kind.className = "kind";
+    kind.textContent = clue.kind;
+    const text = document.createElement("span");
+    text.textContent = clue.text;
+    li.append(kind, text);
+    clueList.appendChild(li);
+  }
+
+  const candidates = (proposal && proposal.candidates) || [];
+  $("candidates-block").classList.toggle("hidden", candidates.length === 0);
+  const candList = $("candidates");
+  candList.replaceChildren();
+  for (const candidate of candidates) {
+    const li = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = candidate.place_name;
+    button.addEventListener("click", () => runGeocode(candidate.place_name));
+    li.appendChild(button);
+    candList.appendChild(li);
+  }
+
+  renderPin(photo, proposal);
+}
+
+function renderPin(photo, proposal) {
+  if (!state.map) return;
+  state.map.clear();
+  const decision = photo.decision;
+  const lat = state.pendingPin ? state.pendingPin.lat
+    : decision && decision.lat != null ? decision.lat
+      : proposal && proposal.pin_source !== "none" ? proposal.pin_lat : null;
+  const lng = state.pendingPin ? state.pendingPin.lng
+    : decision && decision.lng != null ? decision.lng
+      : proposal && proposal.pin_source !== "none" ? proposal.pin_lng : null;
+
+  if (lat != null && lng != null) {
+    state.map.setPin(lat, lng, {
+      draggable: state.editing,
+      onDrag: (dLat, dLng) => { state.pendingPin = { lat: dLat, lng: dLng }; },
+    });
+  } else {
+    state.map.reset();
+  }
+  if (proposal && proposal.lat_hint != null && proposal.lng_hint != null
+      && (proposal.model_agree === 0 || proposal.model_agree === false)) {
+    state.map.setGhost(proposal.lat_hint, proposal.lng_hint);
+  }
+  $("map").classList.toggle("editing", state.editing);
+}
+
+function renderActionBar() {
+  const n = state.selection.size;
+  const photo = anchor();
+  const proposal = (photo && photo.proposal) || null;
+  const canPin = Boolean(state.pendingPin) || Boolean(
+    proposal && (proposal.pin_source === "geocoder" || proposal.pin_source === "user"),
+  );
+
+  const label = $("selection-count");
+  label.replaceChildren();
+  const head = document.createElement("span");
+  head.textContent = n > 1 ? `${n} selected` : photo ? "1 photo" : "nothing";
+  label.appendChild(head);
+  if (n > 1) {
+    const sub = document.createElement("span");
+    sub.className = "sub";
+    sub.textContent = `${countProposed(state.selection)} can take a pin`;
+    label.appendChild(sub);
+  }
+
+  $("btn-accept").firstChild.textContent = n > 1 ? `Accept ${n}` : "Accept";
+  $("btn-accept").disabled = !photo || (n === 1 && !canPin);
+  $("btn-skip").firstChild.textContent = n > 1 ? `Skip ${n}` : "Skip";
+  $("btn-skip").disabled = !photo;
+
+  const edit = $("btn-edit");
+  edit.firstChild.textContent = state.editing ? "Save pin" : "Edit pin";
+  edit.classList.toggle("primary", state.editing);
+  edit.disabled = !photo || n > 1;
+
+  const applyPin = $("btn-apply-pin");
+  applyPin.firstChild.textContent = n > 1 ? `Apply pin to ${n - 1}` : "Apply pin";
+  applyPin.disabled = !photo || n < 2 || !canPin;
+  applyPin.title = n < 2
+    ? "Select more photos to copy this pin onto them"
+    : `Copy ${state.placeName || "this pin"} onto the rest of the selection`;
+
+  const model = $("btn-model");
+  const showModel = Boolean(
+    proposal && proposal.lat_hint != null && proposal.lng_hint != null
+    && n === 1 && (proposal.model_agree === 0 || proposal.model_agree === false || !canPin),
+  );
+  model.classList.toggle("hidden", !showModel);
+}
+
+function countProposed(ids) {
+  let n = 0;
+  for (const id of ids) {
+    const photo = photoById(id);
+    if (photo && photo.status === "proposed") n += 1;
+  }
+  return n;
+}
+
+// ---------------------------------------------------------------- lightbox
+
+function renderLightbox() {
+  const photo = anchor();
+  if (!photo) return;
+  $("lightbox-img").src = previewUrl(photo.id);
+  $("lightbox-img").alt = photo.relpath;
+  $("lightbox-path").textContent = photo.relpath;
+  $("lightbox-when").textContent = formatWhen(photo.datetime_original);
+  $("lightbox-place").textContent = (photo.proposal && photo.proposal.place_name) || "";
+}
+
+function toggleLightbox(open) {
+  state.lightboxOpen = open ?? !state.lightboxOpen;
+  $("lightbox").classList.toggle("hidden", !state.lightboxOpen);
+  if (state.lightboxOpen) renderLightbox();
+}
+
+// ---------------------------------------------------------------- actions
+
+async function loadPhotos({ keepAnchor = true } = {}) {
+  const previousAnchor = keepAnchor ? state.anchorId : null;
+  const previousIndex = state.order.indexOf(previousAnchor);
+  const data = await api.photos(state.filter);
+  state.photos = data.photos || [];
+  state.job = await api.job();
+  renderFilters();
+
+  const stillHere = state.photos.some((p) => p.id === previousAnchor);
+  if (!stillHere) {
+    // The anchor left the filter (a decision moved it). Land where it was, the
+    // way a filmstrip advances, instead of snapping back to the top.
+    state.anchorId = null;
+    state.selection = new Set();
+    renderPhotos();
+    if (previousIndex >= 0 && state.order.length) {
+      const next = state.order[Math.min(previousIndex, state.order.length - 1)];
+      setSelection([next], next);
+    }
+    return;
+  }
+  renderPhotos();
+}
+
+async function decideMany(action, extra) {
+  const ids = [...state.selection];
+  if (!ids.length) return;
+  let ok = 0;
+  const failures = [];
+  for (const id of ids) {
     try {
-      body = text ? JSON.parse(text) : null;
+      await api.decide(id, { action, ...(extra || {}) });
+      ok += 1;
+    } catch (err) {
+      failures.push(String((err && err.message) || err));
+    }
+  }
+  const noun = ok === 1 ? "photo" : "photos";
+  setStatus(
+    failures.length
+      ? `${action}: ${ok} ${noun}, ${failures.length} failed — ${failures[0]}`
+      : `${action}: ${ok} ${noun}`,
+    failures.length > 0,
+  );
+  await loadPhotos();
+}
+
+/* Client-side mirror of app.batch_needs_confirm, for the dialog copy only. The
+   server re-checks and 400s regardless of what the UI decided. */
+function needsTypedConfirm(targetIds) {
+  const targets = targetIds.map(photoById).filter(Boolean);
+  const candidates = targets.filter((p) => p.status === "proposed");
+  if (targetIds.length > CLUSTER_N_CAP) return true;
+  if (targets.length && targets.every((p) => !p.datetime_original)) return true;
+  if (!candidates.length) return false;
+  const missing = candidates.filter((p) => !p.datetime_original).length;
+  return missing / candidates.length > UNSTAMPED_FRACTION;
+}
+
+function askApplyConfirm(sourcePlace, targetIds) {
+  const dialog = $("apply-dialog");
+  const n = targetIds.length;
+  const needed = needsTypedConfirm(targetIds);
+  const undated = targetIds.map(photoById).filter((p) => p && !p.datetime_original).length;
+
+  $("apply-title").textContent = `Copy this pin onto ${n} photo${n === 1 ? "" : "s"}?`;
+  $("apply-body").textContent = needed
+    ? `${sourcePlace || "This pin"} will be written to ${n} photos`
+      + (undated ? `, ${undated} of which have no capture time` : "")
+      + ". A wrong pin copied this widely is hard to notice later, so type the count to confirm."
+    : `${sourcePlace || "This pin"} will be written to ${n} photos. They keep their own files until you run gpsify apply.`;
+  $("apply-confirm-wrap").classList.toggle("hidden", !needed);
+  $("apply-confirm-label").textContent = `Type ${n} to confirm`;
+  $("apply-confirm").value = "";
+
+  return new Promise((resolve) => {
+    const form = $("apply-form");
+    const onSubmit = (event) => {
+      event.preventDefault();
+      form.removeEventListener("submit", onSubmit);
+      const applied = event.submitter && event.submitter.value === "apply";
+      dialog.close();
+      if (!applied) return resolve(null);
+      resolve({ confirmN: needed ? Number($("apply-confirm").value) : undefined });
+    };
+    form.addEventListener("submit", onSubmit);
+    dialog.showModal();
+  });
+}
+
+async function applyPinToSelection() {
+  const source = anchor();
+  if (!source) return;
+  const targets = [...state.selection].filter((id) => id !== source.id);
+  if (!targets.length) {
+    setStatus("Select the photos to copy this pin onto.");
+    return;
+  }
+
+  // /api/pin/apply copies the source's *decision*, so the source has to have
+  // one. Accepting it first is what the user meant by pressing this.
+  if (!source.decision || source.decision.lat == null) {
+    try {
+      const payload = state.pendingPin
+        ? { action: "accept_edited", lat: state.pendingPin.lat, lng: state.pendingPin.lng, place_name: state.placeName || undefined }
+        : { action: "accept" };
+      await api.decide(source.id, payload);
+    } catch (err) {
+      setStatus(`This photo has no pin yet — set one with Edit pin first. (${(err && err.message) || err})`, true);
+      return;
+    }
+  }
+
+  const answer = await askApplyConfirm(state.placeName, targets);
+  if (!answer) return;
+  try {
+    const result = await api.applyPin({
+      source_photo_id: source.id,
+      photo_ids: targets,
+      ...(answer.confirmN === undefined ? {} : { confirm_n: answer.confirmN }),
+    });
+    setStatus(`Pin applied to ${result.count} photos. Nothing written to disk yet.`);
+  } catch (err) {
+    reportError(err);
+  }
+  await loadPhotos();
+}
+
+async function runGeocode(query) {
+  const q = (query || "").trim();
+  if (q.length < 3) {
+    setStatus("Type at least 3 characters, then press Enter.");
+    return;
+  }
+  try {
+    const data = await api.geocode(q);
+    if (!data.hit) {
+      setStatus("No match. Drop a pin on the map instead.");
+      return;
+    }
+    state.editing = true;
+    state.pendingPin = { lat: data.hit.lat, lng: data.hit.lng };
+    state.placeName = data.hit.display_name || q;
+    $("place-name").textContent = state.placeName;
+    renderPin(anchor(), (anchor() || {}).proposal);
+    renderInspector();
+    renderActionBar();
+    setStatus("Pin from search. Press Save pin to keep it.");
+  } catch (err) {
+    reportError(err);
+  }
+}
+
+async function toggleEditPin() {
+  const photo = anchor();
+  if (!photo) return;
+  if (!state.editing) {
+    state.editing = true;
+    if (state.map) state.map.setDraggable(true);
+    renderInspector();
+    renderActionBar();
+    setStatus("Click the map or drag the pin, then Save pin.");
+    return;
+  }
+  if (!state.pendingPin) {
+    setStatus("Click the map to place a pin first.");
+    return;
+  }
+  const { lat, lng } = state.pendingPin;
+  state.editing = false;
+  try {
+    await api.decide(photo.id, {
+      action: "accept_edited",
+      lat,
+      lng,
+      place_name: state.placeName || undefined,
+    });
+    setStatus("Pin saved. Nothing written to disk yet.");
+  } catch (err) {
+    reportError(err);
+  }
+  state.pendingPin = null;
+  await loadPhotos();
+}
+
+function cancelEdit() {
+  if (state.lightboxOpen) return toggleLightbox(false);
+  if (state.editing) {
+    state.editing = false;
+    state.pendingPin = null;
+    renderInspector();
+    renderActionBar();
+    setStatus("");
+    return;
+  }
+  if (state.anchorId) setSelection([state.anchorId], state.anchorId);
+}
+
+async function setFilter(filter) {
+  setStatus("");
+  state.filter = filter;
+  state.anchorId = null;
+  state.selection = new Set();
+  renderFilters();
+  await loadPhotos({ keepAnchor: false });
+}
+
+// ---------------------------------------------------------------- wiring
+
+$("filters").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-filter]");
+  if (!button) return;
+  setFilter(button.dataset.filter).catch(reportError);
+});
+
+$("btn-accept").addEventListener("click", () => decideMany("accept").catch(reportError));
+$("btn-skip").addEventListener("click", () => decideMany("skip").catch(reportError));
+$("btn-edit").addEventListener("click", () => toggleEditPin().catch(reportError));
+$("btn-apply-pin").addEventListener("click", () => applyPinToSelection().catch(reportError));
+$("btn-model").addEventListener("click", () => {
+  const photo = anchor();
+  const proposal = photo && photo.proposal;
+  if (!proposal || proposal.lat_hint == null) return;
+  api.decide(photo.id, {
+    action: "accept_edited",
+    lat: proposal.lat_hint,
+    lng: proposal.lng_hint,
+    place_name: proposal.place_name,
+  }).then(() => loadPhotos()).catch(reportError);
+});
+$("btn-help").addEventListener("click", () => $("help-dialog").showModal());
+$("lightbox").addEventListener("click", () => toggleLightbox(false));
+
+/* "change", not "input": a range slider fires input on every pixel of the drag,
+   and this file is held to a no-input-listener rule so no one can ever wire
+   keystroke geocoding onto the search box. The grid resizes on release. */
+$("tile-size").addEventListener("change", (event) => {
+  const size = Number(event.target.value);
+  document.documentElement.style.setProperty("--tile", `${size}px`);
+  try {
+    window.localStorage.setItem(TILE_KEY, String(size));
+  } catch {
+    /* private windows and blocked site data: the size just does not persist. */
+  }
+});
+
+const search = $("place-search");
+search.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  runGeocode(search.value);
+});
+
+document.addEventListener("keydown", (event) => {
+  const tag = event.target && event.target.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  if (document.querySelector("dialog[open]")) return;
+
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
+    event.preventDefault();
+    setSelection(state.order, state.anchorId || state.order[0]);
+    return;
+  }
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+  switch (event.key) {
+    case " ":
+      event.preventDefault();
+      toggleLightbox();
+      return;
+    case "Escape":
+      cancelEdit();
+      return;
+    case "ArrowRight":
+    case "j":
+      event.preventDefault();
+      moveAnchor(1);
+      return;
+    case "ArrowLeft":
+    case "k":
+      event.preventDefault();
+      moveAnchor(-1);
+      return;
+    case "ArrowDown":
+      event.preventDefault();
+      moveAnchor(columnsPerRow());
+      return;
+    case "ArrowUp":
+      event.preventDefault();
+      moveAnchor(-columnsPerRow());
+      return;
+    case "a":
+      $("btn-accept").click();
+      return;
+    case "s":
+      $("btn-skip").click();
+      return;
+    case "e":
+      $("btn-edit").click();
+      return;
+    case "g":
+      $("btn-apply-pin").click();
+      return;
+    case "?":
+      $("help-dialog").showModal();
+      return;
+    default:
+      break;
+  }
+  const slot = FILTER_ORDER[Number(event.key) - 1];
+  if (slot) setFilter(slot).catch(reportError);
+});
+
+// ---------------------------------------------------------------- boot
+
+(async () => {
+  try {
+    let size = 160;
+    try {
+      size = Number(window.localStorage.getItem(TILE_KEY)) || 160;
     } catch {
-      body = { error: text };
+      /* storage unavailable; the default size is fine. */
     }
-    if (!response.ok) {
-      throw new Error((body && body.error) || response.statusText);
-    }
-    return body;
-  }
+    document.documentElement.style.setProperty("--tile", `${size}px`);
+    $("tile-size").value = String(size);
 
-  function rankClass(rank) {
-    if (rank == null) return "";
-    if (rank >= 0.8) return "high";
-    if (rank >= 0.55) return "mid";
-    return "low";
-  }
-
-  function currentPhoto() {
-    return state.photos[state.index] || null;
-  }
-
-  function setStatus(message) {
-    $("status-msg").textContent = message || "";
-  }
-
-  function renderFilmstrip() {
-    const strip = $("filmstrip");
-    strip.replaceChildren();
-    state.photos.forEach((photo, idx) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = idx === state.index ? "active" : "";
-      const img = document.createElement("img");
-      img.alt = photo.relpath || photo.id;
-      img.src = `/api/thumb/${photo.id}`;
-      btn.appendChild(img);
-      btn.addEventListener("click", () => {
-        state.index = idx;
-        renderPhoto();
-      });
-      strip.appendChild(btn);
+    state.job = await api.job();
+    $("osm-attribution").textContent = state.job.attribution || "© OpenStreetMap contributors";
+    state.map = createMap("map", {
+      tileUrl: state.job.map_tile_url,
+      attribution: state.job.attribution,
+      onPick: (lat, lng) => {
+        if (!state.editing) return;
+        state.pendingPin = { lat, lng };
+        renderPin(anchor(), (anchor() || {}).proposal);
+        renderActionBar();
+      },
     });
+    renderFilters();
+    await loadPhotos({ keepAnchor: false });
+    state.map.refresh();
+  } catch (err) {
+    reportError(err);
   }
-
-  function ensureMap(tileUrl, attribution) {
-    if (state.map) return;
-    state.map = L.map("map");
-    L.tileLayer(tileUrl || "https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: attribution || "© OpenStreetMap contributors",
-    }).addTo(state.map);
-    state.map.setView([20, 0], 2);
-    state.map.on("click", (event) => {
-      if (!state.editMode) return;
-      placeUserPin(event.latlng.lat, event.latlng.lng);
-    });
-  }
-
-  function clearPins() {
-    if (state.pin) {
-      state.map.removeLayer(state.pin);
-      state.pin = null;
-    }
-    if (state.ghost) {
-      state.map.removeLayer(state.ghost);
-      state.ghost = null;
-    }
-  }
-
-  function placeUserPin(lat, lng) {
-    if (!state.map) return;
-    if (state.pin) state.map.removeLayer(state.pin);
-    state.pin = L.marker([lat, lng], { draggable: state.editMode }).addTo(state.map);
-    state.pin.on("dragend", () => {
-      const pos = state.pin.getLatLng();
-      state.pendingLat = pos.lat;
-      state.pendingLng = pos.lng;
-    });
-    state.pendingLat = lat;
-    state.pendingLng = lng;
-    state.map.setView([lat, lng], Math.max(state.map.getZoom(), 12));
-  }
-
-  function renderPhoto() {
-    const photo = currentPhoto();
-    const empty = $("preview-empty");
-    const img = $("preview");
-    renderFilmstrip();
-    if (!photo) {
-      img.classList.add("hidden");
-      empty.classList.remove("hidden");
-      $("place-name").textContent = "";
-      $("granularity").textContent = "";
-      $("rank-badge").textContent = "—";
-      $("clues").replaceChildren();
-      $("candidates").replaceChildren();
-      $("btn-accept").disabled = true;
-      return;
-    }
-    empty.classList.add("hidden");
-    img.classList.remove("hidden");
-    img.src = `/api/preview/${photo.id}`;
-    img.alt = photo.relpath || photo.id;
-    const proposal = photo.proposal || {};
-    const rank = proposal.ui_rank;
-    const badge = $("rank-badge");
-    badge.textContent = rank == null ? "—" : Number(rank).toFixed(2);
-    badge.className = `badge ${rankClass(rank)}`;
-    $("place-name").textContent = proposal.place_name || photo.relpath || "";
-    $("granularity").textContent = proposal.granularity || photo.status;
-    const disagree = $("disagree");
-    if (proposal.model_agree === 0 || proposal.model_agree === false) {
-      disagree.classList.remove("hidden");
-      disagree.textContent = "Model and map search disagree.";
-    } else {
-      disagree.classList.add("hidden");
-      disagree.textContent = "";
-    }
-    const clues = $("clues");
-    clues.replaceChildren();
-    (proposal.clues || []).forEach((clue) => {
-      const li = document.createElement("li");
-      li.textContent = `${clue.kind}: ${clue.text}`;
-      clues.appendChild(li);
-    });
-    const candidates = $("candidates");
-    candidates.replaceChildren();
-    (proposal.candidates || []).forEach((candidate) => {
-      const li = document.createElement("li");
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.textContent = candidate.place_name;
-      btn.addEventListener("click", () => geocodeQuery(candidate.place_name));
-      li.appendChild(btn);
-      candidates.appendChild(li);
-    });
-    const canAccept = proposal.pin_source === "geocoder" || proposal.pin_source === "user";
-    $("btn-accept").disabled = !canAccept;
-    const modelBtn = $("btn-model");
-    const showModel = (
-      proposal.lat_hint != null
-      && proposal.lng_hint != null
-      && (proposal.model_agree === 0 || proposal.model_agree === false || !canAccept)
-    );
-    modelBtn.classList.toggle("hidden", !showModel);
-    clearPins();
-    if (proposal.pin_lat != null && proposal.pin_lng != null && proposal.pin_source !== "none") {
-      placeUserPin(proposal.pin_lat, proposal.pin_lng);
-    } else if (state.map) {
-      state.map.setView([20, 0], 2);
-    }
-    if (proposal.lat_hint != null && proposal.lng_hint != null && (proposal.model_agree === 0 || proposal.model_agree === false)) {
-      state.ghost = L.circleMarker([proposal.lat_hint, proposal.lng_hint], {
-        color: "#e0a100",
-        radius: 8,
-      }).addTo(state.map);
-    }
-    state.editMode = false;
-  }
-
-  async function loadPhotos() {
-    const data = await api(`/api/photos?status=${encodeURIComponent(state.filter)}`);
-    state.photos = data.photos || [];
-    state.index = 0;
-    renderPhoto();
-  }
-
-  async function postDecision(action, extra) {
-    const photo = currentPhoto();
-    if (!photo) return;
-    const body = { action, ...(extra || {}) };
-    await api(`/api/photos/${photo.id}/decision`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    setStatus(`${action} saved`);
-    await loadPhotos();
-  }
-
-  async function geocodeQuery(query) {
-    const q = (query || "").trim();
-    if (q.length < 3) {
-      setStatus("Type at least 3 characters, then press Enter.");
-      return;
-    }
-    try {
-      const data = await api("/api/geocode", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ q }),
-      });
-      if (!data.hit) {
-        setStatus("No geocode hit. Drop a pin.");
-        return;
-      }
-      state.editMode = true;
-      placeUserPin(data.hit.lat, data.hit.lng);
-      $("place-name").textContent = data.hit.display_name || q;
-      setStatus("Pin from search. Save with Edit pin / Accept edited.");
-    } catch (err) {
-      setStatus(String(err.message || err));
-    }
-  }
-
-  async function openCluster() {
-    const photo = currentPhoto();
-    if (!photo || !photo.cluster_id) {
-      setStatus("No cluster for this photo.");
-      return;
-    }
-    const cluster = await api(`/api/clusters/${photo.cluster_id}`);
-    state.cluster = cluster;
-    const list = $("cluster-members");
-    list.replaceChildren();
-    const allowed = new Set(cluster.candidate_ids || []);
-    (cluster.members || []).forEach((member) => {
-      const li = document.createElement("li");
-      const label = document.createElement("label");
-      const box = document.createElement("input");
-      box.type = "checkbox";
-      box.value = member.photo_id;
-      box.checked = allowed.has(member.photo_id);
-      box.disabled = !allowed.has(member.photo_id);
-      label.appendChild(box);
-      label.append(` ${member.relpath} (${member.status})`);
-      li.appendChild(label);
-      list.appendChild(li);
-    });
-    const wrap = $("cluster-confirm-wrap");
-    if (cluster.needs_confirm) {
-      wrap.classList.remove("hidden");
-      $("cluster-confirm").value = "";
-    } else {
-      wrap.classList.add("hidden");
-    }
-    $("cluster-dialog").showModal();
-  }
-
-  async function applyCluster(event) {
-    event.preventDefault();
-    const dialog = $("cluster-dialog");
-    const submitter = event.submitter;
-    if (!submitter || submitter.value !== "apply") {
-      dialog.close();
-      return;
-    }
-    const photo = currentPhoto();
-    const ids = [...$("cluster-members").querySelectorAll("input:checked")].map(
-      (el) => el.value
-    );
-    const payload = { source_photo_id: photo.id, photo_ids: ids };
-    if (state.cluster && state.cluster.needs_confirm) {
-      payload.confirm_n = Number($("cluster-confirm").value);
-    }
-    try {
-      await api(`/api/clusters/${photo.cluster_id}/apply`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      dialog.close();
-      setStatus("cluster apply saved");
-      await loadPhotos();
-    } catch (err) {
-      setStatus(String(err.message || err));
-    }
-  }
-
-  function nextPhoto() {
-    if (!state.photos.length) return;
-    state.index = (state.index + 1) % state.photos.length;
-    renderPhoto();
-  }
-
-  function prevPhoto() {
-    if (!state.photos.length) return;
-    state.index = (state.index - 1 + state.photos.length) % state.photos.length;
-    renderPhoto();
-  }
-
-  $("filters").addEventListener("click", (event) => {
-    const btn = event.target.closest("button[data-filter]");
-    if (!btn) return;
-    state.filter = btn.getAttribute("data-filter");
-    [...$("filters").querySelectorAll("button")].forEach((el) => {
-      el.classList.toggle("active", el === btn);
-    });
-    loadPhotos().catch((err) => setStatus(String(err.message || err)));
-  });
-
-  $("btn-accept").addEventListener("click", () => postDecision("accept").catch((err) => setStatus(String(err.message || err))));
-  $("btn-skip").addEventListener("click", () => postDecision("skip").catch((err) => setStatus(String(err.message || err))));
-  $("btn-edit").addEventListener("click", async () => {
-    const photo = currentPhoto();
-    if (!photo) return;
-    if (!state.editMode) {
-      state.editMode = true;
-      if (state.pin) state.pin.dragging.enable();
-      setStatus("Drag the pin or search, then press Edit pin again to save.");
-      return;
-    }
-    if (state.pendingLat == null || state.pendingLng == null) {
-      setStatus("Drop or drag a pin first.");
-      return;
-    }
-    await postDecision("accept_edited", {
-      lat: state.pendingLat,
-      lng: state.pendingLng,
-      place_name: $("place-name").textContent || undefined,
-    }).catch((err) => setStatus(String(err.message || err)));
-  });
-  $("btn-cluster").addEventListener("click", () => openCluster().catch((err) => setStatus(String(err.message || err))));
-  $("btn-model").addEventListener("click", async () => {
-    const photo = currentPhoto();
-    const proposal = photo && photo.proposal;
-    if (!proposal || proposal.lat_hint == null || proposal.lng_hint == null) return;
-    await postDecision("accept_edited", {
-      lat: proposal.lat_hint,
-      lng: proposal.lng_hint,
-      place_name: proposal.place_name,
-    }).catch((err) => setStatus(String(err.message || err)));
-  });
-  $("btn-next").addEventListener("click", nextPhoto);
-  $("cluster-form").addEventListener("submit", (event) => {
-    applyCluster(event).catch((err) => setStatus(String(err.message || err)));
-  });
-
-  const search = $("place-search");
-  search.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-    geocodeQuery(search.value);
-  });
-
-  document.addEventListener("keydown", (event) => {
-    if (event.target && (event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA")) {
-      return;
-    }
-    if (event.key === "j") nextPhoto();
-    if (event.key === "k") prevPhoto();
-    if (event.key === "a") $("btn-accept").click();
-    if (event.key === "s") $("btn-skip").click();
-    if (event.key === "e") $("btn-edit").click();
-    if (event.key === "c") $("btn-cluster").click();
-  });
-
-  (async () => {
-    try {
-      state.job = await api("/api/job");
-      $("job-meta").textContent = state.job.id;
-      $("osm-attribution").textContent = state.job.attribution || "© OpenStreetMap contributors";
-      ensureMap(state.job.map_tile_url, state.job.attribution);
-      await loadPhotos();
-    } catch (err) {
-      setStatus(String(err.message || err));
-    }
-  })();
 })();

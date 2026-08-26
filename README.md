@@ -199,6 +199,37 @@ be circular.
 
 `apply` with no flags writes copies under `~/.gpsify/jobs/<id>/copies/`. `--in-place` requires `--i-mean-it` or a TTY confirm.
 
+## Review UI
+
+`gpsify review <job>` (or the tail of `gpsify run`) serves a loopback-only grid at
+`127.0.0.1:8765`. Nothing it does writes a file — closing the tab writes nothing, and
+only `gpsify apply` touches a photo.
+
+Photos are grouped the way they were shot: same folder, capture times within 45 minutes
+(K9). A group header reads `Fri 12 Jul · 09:10–09:28 · album root · 7 photos`, and a
+group with no capture times is flagged `⚠ No capture time` — those are the ones the
+apply caps exist to protect.
+
+Two actions look similar and are not:
+
+| | What it does | Capped? |
+| --- | --- | --- |
+| **Accept** (`a`) | Every selected photo keeps its **own** proposal pin | No — nothing is copied between photos |
+| **Apply pin** (`g`) | **One** photo's pin is copied onto the rest of the selection | Yes — K9's caps |
+
+Apply-pin demands a typed confirmation when the batch is over 30 photos, when every
+target lacks a capture time, or when more than 25% of them do. The server re-checks
+that regardless of what the UI decided, and an id outside the `proposed` candidate set
+is rejected rather than silently dropped.
+
+Keyboard: arrows or `j`/`k` move · `Space` full preview · `⇧`-click ranges ·
+`⌘`/`Ctrl`-click toggles · `⌘`/`Ctrl A` selects all · `a` accept · `s` skip ·
+`e` edit pin · `g` apply pin · `1`–`5` filters · `?` the full list.
+
+Place search geocodes **on Enter only** — never as you type (OSMF policy, K10). Leaflet
+is vendored under `static/vendor/`, so the page itself needs no CDN; map tiles still
+come from `map_tile_url`, which you can point at a local tile server.
+
 ### When propose stops at the geocoder cap
 
 The geocoder is the only automatic pin source, so a `propose` run that hits the

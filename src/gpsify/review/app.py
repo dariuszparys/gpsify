@@ -1,7 +1,15 @@
-"""Starlette review API + static Leaflet UI (PR 7).
+"""Starlette review API + static Leaflet UI (PR 7; grid + selection apply, PR 12).
 
 Binds ``127.0.0.1`` only. Thumbs and previews are lazy and looked up by
 ``photo_id`` UUID — originals are never mounted. No EXIF writes.
+
+Two routes copy one photo's accepted pin onto others. ``/api/clusters/{id}/apply``
+is scoped to one cluster; ``/api/pin/apply`` takes an arbitrary grid selection,
+which can span clusters. Both go through ``_apply_source_pin`` so K9's rails hold
+either way: ``proposed``-only candidates, an explicit id list where any extra id
+is a 400 rather than a silent drop, and a typed confirm when the batch is large,
+undated, or mostly untimestamped. A selection is just a cluster the human drew,
+so it gets the same caps.
 """
 
 from __future__ import annotations
@@ -67,6 +75,14 @@ class DecisionBody(BaseModel):
 
 
 class ClusterApplyBody(BaseModel):
+    source_photo_id: str
+    photo_ids: list[str] = Field(min_length=1)
+    confirm_n: int | None = None
+
+
+class PinApplyBody(BaseModel):
+    """An arbitrary grid selection. Same shape as a cluster apply, no cluster id."""
+
     source_photo_id: str
     photo_ids: list[str] = Field(min_length=1)
     confirm_n: int | None = None
@@ -194,12 +210,18 @@ def cluster_apply_candidates(members: list[dict[str, Any]]) -> list[dict[str, An
     return [row for row in members if row["status"] == PhotoStatus.proposed.value]
 
 
-def cluster_needs_confirm(
-    cluster: dict[str, Any],
+def batch_needs_confirm(
+    n: int,
     candidates: list[dict[str, Any]],
     applying: list[dict[str, Any]],
 ) -> bool:
-    if int(cluster["n"]) > CLUSTER_N_CAP:
+    """K9's caps over any batch: too big, undated, or mostly untimestamped.
+
+    ``n`` is the size of the group being reasoned about — a cluster's member
+    count, or the size of a hand-drawn selection. A wrong pin copied onto 400
+    undated exports is the failure this exists to make loud.
+    """
+    if n > CLUSTER_N_CAP:
         return True
     if applying and all(not row.get("datetime_original") for row in applying):
         return True
@@ -207,6 +229,15 @@ def cluster_needs_confirm(
         return False
     missing = sum(1 for row in candidates if not row.get("datetime_original"))
     return (missing / len(candidates)) > CLUSTER_UNSTAMPED_FRACTION
+
+
+def cluster_needs_confirm(
+    cluster: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    applying: list[dict[str, Any]],
+) -> bool:
+    """``batch_needs_confirm`` scoped to a cluster's own member count."""
+    return batch_needs_confirm(int(cluster["n"]), candidates, applying)
 
 
 async def list_low_rank_photos(repo: JobRepo) -> list[dict[str, Any]]:
@@ -402,40 +433,44 @@ async def api_decision(request: Request) -> Response:
     )
 
 
-async def api_cluster_apply(request: Request) -> Response:
-    repo: JobRepo = _state(request).repo
-    cluster_id = request.path_params["cluster_id"]
-    try:
-        body = ClusterApplyBody.model_validate(await request.json())
-    except (json.JSONDecodeError, ValidationError) as exc:
-        return _error(f"invalid body: {exc}")
-    cluster = await repo.get_cluster(cluster_id)
-    if cluster is None:
-        return _error("cluster not found", 404)
-    members = await repo.list_photos_in_cluster(cluster_id)
-    by_id = {row["id"]: row for row in members}
-    if body.source_photo_id not in by_id:
-        return _error("source_photo_id is not in this cluster")
-    source_decision = await repo.get_current_decision(body.source_photo_id)
+async def _apply_source_pin(
+    repo: JobRepo,
+    *,
+    source_photo_id: str,
+    photo_ids: list[str],
+    confirm_n: int | None,
+    pool: list[dict[str, Any]],
+    n: int,
+    label: str,
+) -> Response:
+    """Copy the source photo's accepted pin onto ``photo_ids``.
+
+    ``pool`` is the set the request is allowed to touch — a cluster's members, or
+    the selected photos themselves. Validation order matters and is preserved
+    from the cluster route: the source must exist in the pool, must carry a
+    current decision, and that decision must have coordinates, before any id is
+    checked. An id outside the candidate set is a 400, never a silent drop, so a
+    stale UI can never quietly widen a write (K9).
+    """
+    by_id = {row["id"]: row for row in pool}
+    if source_photo_id not in by_id:
+        return _error(f"source_photo_id is not in this {label}")
+    source_decision = await repo.get_current_decision(source_photo_id)
     if source_decision is None:
         return _error("source photo has no current decision")
     lat = source_decision.get("lat")
     lng = source_decision.get("lng")
     if lat is None or lng is None:
         return _error("source decision has no coordinates")
-    candidates = cluster_apply_candidates(members)
+    candidates = cluster_apply_candidates(pool)
     allowed = {row["id"] for row in candidates}
-    requested = list(dict.fromkeys(body.photo_ids))
+    requested = list(dict.fromkeys(photo_ids))
     extra = [pid for pid in requested if pid not in allowed]
     if extra:
         return _error(f"photo_ids not in proposed candidate set: {extra}")
     applying = [by_id[pid] for pid in requested]
-    if cluster_needs_confirm(cluster, candidates, applying):
-        if body.confirm_n != int(cluster["n"]):
-            return _error(
-                "cluster apply requires confirm_n equal to cluster size "
-                f"({cluster['n']})"
-            )
+    if batch_needs_confirm(n, candidates, applying) and confirm_n != n:
+        return _error(f"{label} apply requires confirm_n equal to {label} size ({n})")
     decision_ids: list[str] = []
     try:
         for pid in requested:
@@ -452,6 +487,59 @@ async def api_cluster_apply(request: Request) -> Response:
     except DecisionError as exc:
         return _error(str(exc))
     return _json({"decision_ids": decision_ids, "count": len(decision_ids)})
+
+
+async def api_cluster_apply(request: Request) -> Response:
+    repo: JobRepo = _state(request).repo
+    cluster_id = request.path_params["cluster_id"]
+    try:
+        body = ClusterApplyBody.model_validate(await request.json())
+    except (json.JSONDecodeError, ValidationError) as exc:
+        return _error(f"invalid body: {exc}")
+    cluster = await repo.get_cluster(cluster_id)
+    if cluster is None:
+        return _error("cluster not found", 404)
+    members = await repo.list_photos_in_cluster(cluster_id)
+    return await _apply_source_pin(
+        repo,
+        source_photo_id=body.source_photo_id,
+        photo_ids=body.photo_ids,
+        confirm_n=body.confirm_n,
+        pool=members,
+        n=int(cluster["n"]),
+        label="cluster",
+    )
+
+
+async def api_pin_apply(request: Request) -> Response:
+    """Apply one accepted pin to a hand-drawn grid selection, across clusters.
+
+    The pool is the selection itself plus the source, so the caps in
+    ``batch_needs_confirm`` measure what the human actually picked. A selection
+    is not safer than a cluster just because a human drew it — 40 undated photos
+    still demand a typed confirm.
+    """
+    repo: JobRepo = _state(request).repo
+    try:
+        body = PinApplyBody.model_validate(await request.json())
+    except (json.JSONDecodeError, ValidationError) as exc:
+        return _error(f"invalid body: {exc}")
+    wanted = list(dict.fromkeys([body.source_photo_id, *body.photo_ids]))
+    pool: list[dict[str, Any]] = []
+    for pid in wanted:
+        photo = await repo.get_photo(pid)
+        if photo is None:
+            return _error(f"unknown photo_id: {pid}", 404)
+        pool.append(photo)
+    return await _apply_source_pin(
+        repo,
+        source_photo_id=body.source_photo_id,
+        photo_ids=body.photo_ids,
+        confirm_n=body.confirm_n,
+        pool=pool,
+        n=len(dict.fromkeys(body.photo_ids)),
+        label="selection",
+    )
 
 
 async def api_geocode(request: Request) -> Response:
@@ -542,6 +630,7 @@ def create_app(
         Route("/api/preview/{photo_id}", api_preview),
         Route("/api/clusters/{cluster_id}", api_cluster),
         Route("/api/clusters/{cluster_id}/apply", api_cluster_apply, methods=["POST"]),
+        Route("/api/pin/apply", api_pin_apply, methods=["POST"]),
         Route("/api/geocode", api_geocode, methods=["POST"]),
         Mount("/static", StaticFiles(directory=STATIC_DIR), name="static"),
     ]

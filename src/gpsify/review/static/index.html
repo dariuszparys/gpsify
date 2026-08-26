@@ -4,69 +4,117 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>gpsify review</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1.5a4.2 4.2 0 0 0-4.2 4.2c0 3.1 4.2 8.8 4.2 8.8s4.2-5.7 4.2-8.8A4.2 4.2 0 0 0 8 1.5z' fill='%234c8dff'/%3E%3Ccircle cx='8' cy='5.7' r='1.6' fill='%23fff'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/static/vendor/leaflet.css" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <header class="chrome">
-    <strong>gpsify</strong>
-    <span id="job-meta"></span>
-    <nav id="filters" class="filters">
-      <button type="button" data-filter="needs_review" class="active">needs review</button>
-      <button type="button" data-filter="low">low UI rank</button>
-      <button type="button" data-filter="refused">refused</button>
-      <button type="button" data-filter="accepted">accepted</button>
-      <button type="button" data-filter="all">all</button>
+  <header class="topbar">
+    <div class="brand">gps<span>ify</span></div>
+    <div class="job-name" id="job-name"></div>
+    <nav id="filters" class="filters" aria-label="Filter photos">
+      <button type="button" data-filter="needs_review" class="active">Needs review</button>
+      <button type="button" data-filter="low">Low confidence</button>
+      <button type="button" data-filter="refused">Refused</button>
+      <button type="button" data-filter="accepted">Accepted</button>
+      <button type="button" data-filter="all">All</button>
     </nav>
+    <div class="spacer"></div>
+    <div class="zoom">
+      <label for="tile-size" class="section-label">Size</label>
+      <input id="tile-size" type="range" min="96" max="320" step="8" value="160" />
+    </div>
+    <button type="button" id="btn-help" class="ghost" title="Keyboard shortcuts">?</button>
   </header>
+
   <main class="layout">
-    <aside id="filmstrip" class="filmstrip" aria-label="Photos"></aside>
-    <section class="preview-pane">
-      <img id="preview" alt="Photo preview" />
-      <p id="preview-empty" class="muted">No photos in this filter.</p>
-    </section>
-    <section class="map-pane">
+    <section id="grid-pane" class="grid-pane" aria-label="Photos"></section>
+
+    <aside class="inspector" aria-label="Selected photo">
       <div id="map"></div>
       <p class="attribution" id="osm-attribution">© OpenStreetMap contributors</p>
-      <div id="details">
-        <div class="row">
-          <span id="rank-badge" class="badge">—</span>
-          <span id="place-name"></span>
+      <div class="details" id="details">
+        <div class="place-row">
+          <span class="place-name" id="place-name"></span>
+          <span class="badge" id="rank-badge">—</span>
         </div>
-        <p id="granularity" class="muted"></p>
-        <p id="disagree" class="warn hidden"></p>
-        <ul id="clues"></ul>
-        <ul id="candidates"></ul>
-        <label class="search-label" for="place-search">Place search (Enter to geocode)</label>
-        <input id="place-search" type="search" autocomplete="off" placeholder="Place name" />
+        <div class="meta" id="meta"></div>
+        <p class="notice hidden" id="notice"></p>
+        <div id="clues-block" class="hidden">
+          <div class="section-label">What the model saw</div>
+          <ul class="clues" id="clues"></ul>
+        </div>
+        <div id="candidates-block" class="hidden">
+          <div class="section-label">Other candidates</div>
+          <ul class="candidates" id="candidates"></ul>
+        </div>
+        <div class="search">
+          <label class="section-label" for="place-search">Place search — press Enter</label>
+          <input id="place-search" type="search" autocomplete="off" spellcheck="false"
+                 placeholder="Praça da Liberdade, Porto" />
+        </div>
       </div>
-    </section>
+    </aside>
   </main>
-  <footer class="bar">
-    <button type="button" id="btn-accept" data-key="a">Accept (a)</button>
-    <button type="button" id="btn-skip" data-key="s">Skip (s)</button>
-    <button type="button" id="btn-edit" data-key="e">Edit pin (e)</button>
-    <button type="button" id="btn-cluster" data-key="c">Apply to cluster (c)</button>
+
+  <footer class="actionbar">
+    <div class="selection-count" id="selection-count"></div>
+    <button type="button" id="btn-accept" class="primary">Accept<kbd>a</kbd></button>
+    <button type="button" id="btn-skip">Skip<kbd>s</kbd></button>
+    <button type="button" id="btn-edit">Edit pin<kbd>e</kbd></button>
+    <button type="button" id="btn-apply-pin">Apply pin<kbd>g</kbd></button>
     <button type="button" id="btn-model" class="hidden">Use model coordinates</button>
-    <button type="button" id="btn-next">Next</button>
-    <span id="status-msg" class="muted"></span>
+    <div class="spacer"></div>
+    <span class="status-msg" id="status-msg"></span>
   </footer>
-  <dialog id="cluster-dialog">
-    <form method="dialog" id="cluster-form">
-      <h2>Apply to cluster</h2>
-      <p class="muted">Default: proposed members only. Extra ids are rejected by the server.</p>
-      <ul id="cluster-members"></ul>
-      <p id="cluster-confirm-wrap" class="hidden">
-        <label for="cluster-confirm">Type cluster size to confirm</label>
-        <input id="cluster-confirm" type="number" min="1" />
-      </p>
+
+  <div class="lightbox hidden" id="lightbox">
+    <img id="lightbox-img" alt="Full preview" />
+    <div class="lightbox-meta">
+      <strong id="lightbox-path"></strong>
+      <span id="lightbox-when"></span>
+      <span id="lightbox-place"></span>
+      <span class="hint">Space or Esc to close · arrows to move</span>
+    </div>
+  </div>
+
+  <dialog id="apply-dialog">
+    <form method="dialog" id="apply-form">
+      <h2 id="apply-title">Apply this pin</h2>
+      <p id="apply-body"></p>
+      <div class="confirm-field hidden" id="apply-confirm-wrap">
+        <label for="apply-confirm" id="apply-confirm-label">Type the count to confirm</label>
+        <input id="apply-confirm" type="number" min="1" />
+      </div>
       <menu>
         <button type="submit" value="cancel">Cancel</button>
-        <button type="submit" value="apply" id="cluster-apply-btn">Apply</button>
+        <button type="submit" value="apply" class="primary" id="apply-ok">Apply pin</button>
       </menu>
     </form>
   </dialog>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="/static/app.js"></script>
+
+  <dialog id="help-dialog">
+    <form method="dialog">
+      <h2>Keyboard</h2>
+      <dl class="shortcuts">
+        <dt>← → ↑ ↓</dt><dd>Move through the grid</dd>
+        <dt>j / k</dt><dd>Next / previous photo</dd>
+        <dt>Space</dt><dd>Full preview (Esc or Space closes)</dd>
+        <dt>⇧ click</dt><dd>Select a range</dd>
+        <dt>⌘ / Ctrl click</dt><dd>Add or remove one photo</dd>
+        <dt>⌘ / Ctrl A</dt><dd>Select everything in this filter</dd>
+        <dt>a</dt><dd>Accept — each photo keeps its own pin</dd>
+        <dt>s</dt><dd>Skip</dd>
+        <dt>e</dt><dd>Edit pin: click the map or drag, then save</dd>
+        <dt>g</dt><dd>Copy this photo's pin onto the whole selection</dd>
+        <dt>1 – 5</dt><dd>Switch filter</dd>
+        <dt>Esc</dt><dd>Cancel edit, or clear the selection</dd>
+      </dl>
+      <menu><button type="submit" class="primary">Close</button></menu>
+    </form>
+  </dialog>
+
+  <script src="/static/vendor/leaflet.js"></script>
+  <script type="module" src="/static/app.js"></script>
 </body>
 </html>

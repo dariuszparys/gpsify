@@ -51,7 +51,9 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"gpsify.review" = ["static/*"]
+# vendor/* is a second entry on purpose: a single "static/*" does not recurse,
+# so an installed wheel would ship the page without Leaflet.
+"gpsify.review" = ["static/*", "static/vendor/*"]
 
 [dependency-groups]
 dev = [

@@ -22,7 +22,12 @@ from gpsify.review import (
     create_app,
     parse_photo_filter,
 )
-from gpsify.review.app import PhotoFilter, STATIC_DIR
+from gpsify.review.app import (
+    CLUSTER_N_CAP,
+    STATIC_DIR,
+    PhotoFilter,
+    batch_needs_confirm,
+)
 from gpsify.store import JobRepo, job_dir, options_hash
 from gpsify.types import DecisionAction, GeoHit, PhotoStatus, PinSource
 from jpeg_factory import PORTO_LAT, PORTO_LNG, write_test_jpeg
@@ -183,14 +188,42 @@ def test_parse_photo_filter_default_needs_review() -> None:
 
 
 def test_static_search_is_enter_only() -> None:
-    js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    """K10: the place box geocodes on Enter, never on a keystroke.
+
+    Every first-party module is scanned, not just ``app.js`` — the UI is split
+    into modules and a typeahead added to any of them would be just as much a
+    policy breach. ``vendor/`` is deliberately outside this glob: Leaflet is
+    third-party code that never touches the geocoder.
+    """
+    modules = sorted(STATIC_DIR.glob("*.js"))
+    assert [path.name for path in modules] == ["api.js", "app.js", "grid.js", "map.js"]
+    sources = {path.name: path.read_text(encoding="utf-8") for path in modules}
+    for name, js in sources.items():
+        assert 'addEventListener("input"' not in js, name
+        assert ".oninput" not in js, name
+        assert "autocomplete" not in js.lower(), name
+
+    entry = sources["app.js"]
+    assert "keydown" in entry
+    assert 'event.key !== "Enter"' in entry
+
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    assert "keydown" in js
-    assert 'event.key !== "Enter"' in js
-    assert 'addEventListener("input"' not in js
-    assert "autocomplete" not in js.lower()
     assert "© OpenStreetMap contributors" in html
     assert GEOCODE_MIN_Q_LEN == 3
+
+
+def test_static_assets_are_local_only() -> None:
+    """The page must not fetch a CDN script to render. Tiles are the exception."""
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    for attr in ("src=", "href="):
+        for chunk in html.split(attr)[1:]:
+            url = chunk.split('"')[1] if chunk.startswith('"') else ""
+            # /static/ is served from this process; data: is inlined in the
+            # page. Anything else is a request that leaves the machine.
+            if url:
+                assert url.startswith(("/static/", "data:")), url
+    assert (STATIC_DIR / "vendor" / "leaflet.js").is_file()
+    assert (STATIC_DIR / "vendor" / "leaflet.css").is_file()
 
 
 def test_review_api_job_and_filters(data_dir: Path) -> None:
@@ -353,6 +386,160 @@ def test_cluster_apply_explicit_ids_and_caps(data_dir: Path) -> None:
             await cache.close()
 
     run(body())
+
+
+
+def test_pin_apply_spans_clusters_and_keeps_the_caps(data_dir: Path) -> None:
+    """A hand-drawn selection is just a cluster the human drew — same rails."""
+
+    async def body() -> None:
+        repo = await _create_repo(data_dir)
+        async with repo:
+            cluster_a = await repo.insert_cluster(
+                parent=".", first_ts="2019-06-14T18:04:00", n=2, undated=0
+            )
+            cluster_b = await repo.insert_cluster(
+                parent="day2", first_ts="2019-06-15T09:00:00", n=1, undated=0
+            )
+            source = await _add_photo(repo, suffix="src", cluster_id=cluster_a)
+            await _proposal(repo, source)
+            near = await _add_photo(repo, suffix="near", cluster_id=cluster_a)
+            await _proposal(repo, near)
+            far = await _add_photo(repo, suffix="far", cluster_id=cluster_b)
+            await _proposal(repo, far)
+            await repo.add_decision(source, DecisionAction.accept)
+
+            client, _fake, cache, _app = await _client_for(data_dir, repo)
+            async with client:
+                crossing = await client.post(
+                    "/api/pin/apply",
+                    json={"source_photo_id": source, "photo_ids": [near, far]},
+                )
+                assert crossing.status_code == 200, crossing.text
+                assert crossing.json()["count"] == 2
+                for pid in (near, far):
+                    photo = await repo.get_photo(pid)
+                    decision = await repo.get_current_decision(pid)
+                    assert photo is not None and decision is not None
+                    assert photo["status"] == PhotoStatus.accepted_edited.value
+                    assert decision["action"] == DecisionAction.cluster_apply.value
+                    assert decision["lat"] == pytest.approx(PORTO_LAT)
+                # The UI never writes files; only `gpsify apply` does.
+                assert await repo.list_write_receipts() == []
+            await cache.close()
+
+    run(body())
+
+
+def test_pin_apply_rejects_bad_sources_and_ids(data_dir: Path) -> None:
+    async def body() -> None:
+        repo = await _create_repo(data_dir)
+        async with repo:
+            source = await _add_photo(repo, suffix="src")
+            await _proposal(repo, source)
+            target = await _add_photo(repo, suffix="tgt")
+            await _proposal(repo, target)
+            settled = await _add_photo(
+                repo, suffix="done", status=PhotoStatus.skipped_by_user
+            )
+
+            client, _fake, cache, _app = await _client_for(data_dir, repo)
+            async with client:
+                # No decision on the source yet: nothing to copy.
+                undecided = await client.post(
+                    "/api/pin/apply",
+                    json={"source_photo_id": source, "photo_ids": [target]},
+                )
+                assert undecided.status_code == 400
+                assert "no current decision" in undecided.json()["error"]
+
+                await repo.add_decision(source, DecisionAction.accept)
+
+                missing = await client.post(
+                    "/api/pin/apply",
+                    json={
+                        "source_photo_id": source,
+                        "photo_ids": ["44444444-4444-4444-8444-444444444444"],
+                    },
+                )
+                assert missing.status_code == 404
+
+                # Not `proposed` -> not a candidate -> 400, never a silent drop.
+                settled_reply = await client.post(
+                    "/api/pin/apply",
+                    json={"source_photo_id": source, "photo_ids": [settled]},
+                )
+                assert settled_reply.status_code == 400
+                assert "candidate set" in settled_reply.json()["error"]
+                assert await repo.get_current_decision(settled) is None
+            await cache.close()
+
+    run(body())
+
+
+def test_pin_apply_typed_confirm_for_undated_and_large_selections(
+    data_dir: Path,
+) -> None:
+    async def body() -> None:
+        repo = await _create_repo(data_dir)
+        async with repo:
+            source = await _add_photo(repo, suffix="src")
+            await _proposal(repo, source)
+            undated = [
+                await _add_photo(repo, suffix=f"u{i}", datetime_original=None)
+                for i in range(3)
+            ]
+            for pid in undated:
+                await _proposal(repo, pid)
+            await repo.add_decision(source, DecisionAction.accept)
+
+            client, _fake, cache, _app = await _client_for(data_dir, repo)
+            async with client:
+                # Every target lacks a capture time: the dangerous case (K9).
+                blocked = await client.post(
+                    "/api/pin/apply",
+                    json={"source_photo_id": source, "photo_ids": undated},
+                )
+                assert blocked.status_code == 400
+                assert "confirm_n" in blocked.json()["error"]
+                assert await repo.get_current_decision(undated[0]) is None
+
+                wrong = await client.post(
+                    "/api/pin/apply",
+                    json={
+                        "source_photo_id": source,
+                        "photo_ids": undated,
+                        "confirm_n": 99,
+                    },
+                )
+                assert wrong.status_code == 400
+
+                ok = await client.post(
+                    "/api/pin/apply",
+                    json={
+                        "source_photo_id": source,
+                        "photo_ids": undated,
+                        "confirm_n": len(undated),
+                    },
+                )
+                assert ok.status_code == 200, ok.text
+                assert ok.json()["count"] == len(undated)
+            await cache.close()
+
+    run(body())
+
+
+def test_batch_needs_confirm_caps() -> None:
+    """The gate itself: size, all-undated, and the untimestamped fraction."""
+    dated = [{"datetime_original": "2019:06:14 18:04:00"} for _ in range(4)]
+    undated = [{"datetime_original": None} for _ in range(4)]
+
+    assert batch_needs_confirm(CLUSTER_N_CAP + 1, dated, dated) is True
+    assert batch_needs_confirm(4, dated, dated) is False
+    assert batch_needs_confirm(4, dated, undated) is True
+    # 2 of 4 candidates untimestamped is over the 25% fraction.
+    assert batch_needs_confirm(4, dated[:2] + undated[:2], dated) is True
+    assert batch_needs_confirm(4, [], []) is False
 
 
 def test_geocode_enter_only_contract(data_dir: Path) -> None:
