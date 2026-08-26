@@ -1,20 +1,59 @@
 # gpsify
 
+[![CI](https://github.com/dariuszparys/gpsify/actions/workflows/ci.yml/badge.svg)](https://github.com/dariuszparys/gpsify/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
+
 Visual geolocation of untagged photos. gpsify proposes a location from pixels, shows its work, and writes GPS **only after a human accepts**.
 
-This repository is a macOS-first, local-first CLI plus a localhost review UI. The design is in [`docs/design.md`](docs/design.md). Product questions there are already resolved; implementation follows the PR plan in that document.
+This repository is a macOS-first, local-first CLI plus a localhost review UI. The safety rails it will not cross — and the frozen SQLite schema behind them — are in [`docs/decisions.md`](docs/decisions.md).
+
+<!-- Screenshot of the review grid goes here, e.g.:
+     ![The gpsify review grid](docs/images/review-grid.png)
+     Run `gpsify review <job>` on a real album and capture the browser window. -->
 
 ## Status
 
-**PR 9 — status `--json` rollup and clean previews.** `gpsify status [job_id] --json` reads `job.stats_json` plus live photo counts and prints the default dest root (`jobs/<id>/copies/`). `gpsify clean <job_id>` deletes `previews/` and `thumbs/` and keeps sqlite + backups. Cost counters are written by `propose` / `apply`; this slice only exposes them.
+**Alpha.** The whole pipeline works end to end: `ingest → propose → review → apply → undo`, two vision providers, a Lightroom-style review grid, and full-file undo. Expect rough edges in error messages and in formats outside the JPEG/HEIC happy path.
 
-GPS is never written without a stored current decision.
+What it will not do, by design: **write GPS without a stored human decision.** There is no confidence threshold that unlocks an automatic write.
+
+macOS-first (HEIC, Homebrew `exiftool`). Linux is best-effort. Windows is not supported.
+
+## What this sends where
+
+gpsify is local-first, not local-only. Running `propose` sends your photos to a third-party AI provider. Specifically:
+
+| Leaves your machine | To whom | What exactly |
+| --- | --- | --- |
+| A resized **1280 px JPEG preview** of each untagged photo, plus its **filename** and any `--hint` you pass | xAI or Google, whichever `--provider` you pick | Never the original file, never the RAW container, never the rest of the path |
+| The **place name** the model guessed (e.g. `Ponte de Dom Luís I, Porto`) | Your configured geocoder — public Nominatim by default | Never a house-address-shaped string, never a privacy-flagged or refused result |
+
+Nothing else. No telemetry, no analytics, no crash reporting. The review UI binds `127.0.0.1` and serves thumbnails by opaque `photo_id` — originals are never mounted, and there is no LAN flag. Job data, previews, and backups stay in `~/.gpsify`.
+
+On retention: xAI calls set `store=False` on every request. **Gemini has no per-request equivalent** — see [Gemini retention](#gemini-retention-use-a-billed-key) before pointing a free-tier key at real photos.
+
+### It costs real money
+
+One paid vision call per photo. There is no confirmation prompt before spending.
+
+| Album size | `xai` / `grok-4.6` | `gemini` / `gemini-2.5-flash` |
+| --- | --- | --- |
+| 100 photos | ~$0.60–$1.50 | ~$0.18 |
+| 2,000 photos | ~$12–$30 | ~$3.60 |
+
+Three escape hatches, in the order you should reach for them:
+
+- `GPSIFY_DRY_RUN=1` — blocks every paid call and every write; prints what it *would* do.
+- `--dry-run` — the same, per command.
+- `--limit N` — cap how many photos this run proposes.
+
+The running `est_usd` total prints as `propose` goes, and `gpsify status --json` reports cumulative spend for the life of the job.
 
 ## Requirements
 
 - Python 3.12+
 - [`exiftool`](https://exiftool.org) on `PATH` — `brew install exiftool`. Treat this as required, not optional; see below.
-- macOS-first (HEIC, Homebrew `exiftool`, Time Machine). Linux is best-effort; Windows is out of v1.
 
 ### Why `exiftool` is effectively required
 
@@ -48,6 +87,27 @@ uv run gpsify --help
 
 `heic` (`pillow-heif`) is the one optional runtime extra and covers HEIC **decode** for previews and vision. Omit `--extra heic` to match CI: JPEG/PNG/RAW still work and HEIC preview is `skipped_unsupported`.
 
+## Quickstart
+
+Get a key from [xAI](https://console.x.ai) (or [Google AI Studio](https://aistudio.google.com/apikey) for `--provider gemini`), then:
+
+```bash
+export XAI_API_KEY=...
+export NOMINATIM_CONTACT=you@example.com    # required by OSMF policy, see below
+
+# See what it would do and what it would cost — spends nothing:
+GPSIFY_DRY_RUN=1 uv run gpsify run ~/Pictures/my-album
+
+# For real, capped at 20 photos:
+uv run gpsify run ~/Pictures/my-album --hint "weekend in Porto, 2019" --limit 20
+```
+
+`run` chains `ingest → propose → review` and opens the review grid in your browser. Nothing is written to a photo until you review the proposals and then run `apply`:
+
+```bash
+uv run gpsify apply ~/Pictures/my-album      # writes copies, originals untouched
+```
+
 ## Configuration
 
 Secrets stay out of git. Copy [`.env.example`](.env.example) to `.env` or export in the shell:
@@ -64,6 +124,10 @@ Secrets stay out of git. Copy [`.env.example`](.env.example) to `.env` or export
 | `GPSIFY_VISION_PROVIDER` | `xai` | `xai` \| `gemini`; default for `--provider` |
 | `GPSIFY_DATA_DIR` | `~/.gpsify` | Config, job index, and job trees |
 | `GEOCODER_URL` | public Nominatim search | Switch geocoder without a code change |
+| `GPSIFY_GEOCODER` | `nominatim` | Geocoder client to use |
+| `GEOCODE_LANG` | `en` | Language for geocoder results |
+| `MAP_TILE_URL` | OpenStreetMap tiles | Point the review map at your own tile server |
+| `GPSIFY_DRY_RUN` | unset | `1` blocks every paid call and every write — see [above](#it-costs-real-money) |
 
 Optional `~/.gpsify/config.toml` (mode `0600` on a real machine):
 
@@ -82,7 +146,9 @@ reasoning_effort = "low"
 timeout_s = 600
 ```
 
-Environment variables override the TOML file.
+`NOMINATIM_CONTACT` is **required** before gpsify will call the public Nominatim instance — the [OSMF usage policy](https://operations.osmfoundation.org/policies/nominatim/) requires an identifiable contact. It is not needed if you point `GEOCODER_URL` at your own instance.
+
+Environment variables override the TOML file. `GPSIFY_DRY_RUN` is the exception: it is read straight from the environment and has no TOML key, so it can never be left on by a config file you forgot about.
 
 ## Vision providers
 
@@ -117,7 +183,7 @@ it on yours, `scripts/bakeoff.py` scores any set of models against photos whose
 GPS you already have — the album's own EXIF is the answer key:
 
 ```bash
-uv run python scripts/bakeoff.py ~/Pictures/porto-2019 \
+uv run python scripts/bakeoff.py ~/Pictures/my-album \
     --model xai:grok-4.6 \
     --model gemini:gemini-2.5-flash \
     --model gemini:gemini-2.5-pro \
@@ -157,26 +223,14 @@ gpsify status [job] [--json]
 gpsify clean <job>
 ```
 
-Typical session — one command from folder to review:
-
-```bash
-export XAI_API_KEY=...
-uv run gpsify run ~/Pictures/porto-2019 --hint "weekend in Porto, 2019"
-# review in the browser, then:
-uv run gpsify apply ~/Pictures/porto-2019
-```
-
-`run` chains `ingest` → `propose` → `review`. It spends real money on vision calls
-with no confirmation prompt; `--dry-run` and `--limit N` are the escape hatches, and
-the running `est_usd` prints as it goes. `--no-review` stops after propose. It never
-writes GPS — only `apply` does.
+[Quickstart](#quickstart) covers the one-command path. `run` chains `ingest` → `propose` → `review`; `--no-review` stops after propose. It never writes GPS — only `apply` does.
 
 The staged commands still work, and `ingest` still prints the `job_id`:
 
 ```bash
-uv run gpsify ingest ~/Pictures/porto-2019 --hint "weekend in Porto, 2019"
-uv run gpsify propose ~/Pictures/porto-2019
-uv run gpsify review ~/Pictures/porto-2019
+uv run gpsify ingest ~/Pictures/my-album --hint "weekend in Porto, 2019"
+uv run gpsify propose ~/Pictures/my-album
+uv run gpsify review ~/Pictures/my-album
 ```
 
 ### Job handles
@@ -188,7 +242,7 @@ resume key covers `{recursive: bool}`, one folder ingested both flat and `--recu
 holds two jobs — gpsify then takes the most recent and says which it picked:
 
 ```text
-$ gpsify status ~/Pictures/porto-2019
+$ gpsify status ~/Pictures/my-album
 2 jobs share this folder; using the most recent: 9f060a67-… (recursive)
 ```
 
@@ -250,6 +304,17 @@ pipeline records (and caches) as a miss rather than an error. A few hundred
 lookups at the built-in 1 rps is well inside personal use of the public
 instance; a self-hosted Nominatim switches the cap off entirely.
 
+## Limitations
+
+- **A wrong pin is possible and expected.** Vision geolocation is a guess. gpsify is built around that: it shows the model's own coordinate next to the geocoder's, ranks its confidence, and makes you accept. Do not batch-accept without looking.
+- **`exiftool` is effectively required** — see [above](#why-exiftool-is-effectively-required). Without it, a geotagged HEIC ingests as untagged and would be proposed a new location.
+- **RAW is never rewritten.** RAW photos get a sibling `.xmp` sidecar; the pixel data is never touched. Your RAW converter has to read sidecars for the tag to show up.
+- **Photos.app libraries are refused.** gpsify will not open a `*.photoslibrary` bundle. Export first.
+- **The geocoder must be Nominatim-shaped.** A self-hosted Nominatim works; Photon, Mapbox, and Google do not.
+- **Public Nominatim is rate-limited and capped** at 50 uncached lookups per run, by policy. Large albums will need `gpsify geocode` passes or your own instance.
+- **macOS-first.** Linux is best-effort; Windows is not supported.
+- **Not on PyPI.** Install from a clone with `uv`.
+
 ## Tests
 
 **GitHub Actions is the source of truth** for CI. The workflow runs `uv sync --locked` then `uv run pytest --disable-socket --allow-unix-socket` with `GPSIFY_DRY_RUN=1`. Unix sockets are allowed so asyncio/aiosqlite can create an event loop; TCP/UDP stay blocked. No live xAI, Nominatim, or GPS writes.
@@ -264,4 +329,10 @@ HEIC and live RAW-extract tests skip when `pillow-heif` / `exiftool` are missing
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) — Copyright (c) 2026 Dariusz Parys
+
+### Third-party
+
+- [Leaflet](https://leafletjs.com) 1.9.4 is vendored under [`src/gpsify/review/static/vendor/`](src/gpsify/review/static/vendor/) so the review UI needs no CDN. BSD-2-Clause, (c) 2010-2023 Volodymyr Agafonkin, (c) 2010-2011 CloudMade — [full license text](src/gpsify/review/static/vendor/LICENSE-leaflet.txt).
+- Map tiles and geocoding default to [OpenStreetMap](https://www.openstreetmap.org/copyright) — © OpenStreetMap contributors, [ODbL](https://opendatacommons.org/licenses/odbl/). The review UI displays this attribution, and gpsify follows the [OSMF Nominatim usage policy](https://operations.osmfoundation.org/policies/nominatim/): identifiable User-Agent, ≤1 request per second, results cached, no typeahead, and a per-run cap on uncached lookups.
+- [`exiftool`](https://exiftool.org) by Phil Harvey is an external dependency, not bundled.
