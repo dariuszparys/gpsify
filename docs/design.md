@@ -254,7 +254,25 @@ Stock HTTP-library UAs are forbidden.
 
 ### CLI surface
 
+Every `<job_id>` below is a **job handle**: a UUID, a folder path, or `last`
+(PR 11, `store.index.resolve_job_handle`). A folder resolves against the global
+index by the same canonical path `ingest` registered. One folder can hold two
+jobs — `options_hash` covers `{recursive: bool}` — so gpsify takes the most
+recently ingested and prints which it picked rather than choosing silently. A
+UUID whose `job.sqlite` exists stays addressable with no index row, so a lost
+index orphans nothing. `ingest --relocate JOB_ID` still requires a literal UUID:
+it rebinds a job to a new path, so resolving it *by* path is circular.
+
 ```text
+gpsify run <folder> [--hint TEXT] [--recursive] [--limit N] [--concurrency 3]
+                    [--provider xai|gemini] [--geocode-uncached-max N]
+                    [--port 8765] [--dry-run] [--no-review]
+       → ingest -> propose -> review in one command; writes no GPS
+       → spends on vision with no confirm prompt; --dry-run / --limit are the brakes
+       → reports (never auto-runs) a needed `gpsify geocode` pass: the uncached cap
+         is an OSMF policy rail (K10) and hitting it must stay visible
+       → --no-review stops after propose; exit 1 if any photo errored
+
 gpsify ingest <folder> [--hint "weekend in Porto"] [--recursive] [--relocate JOB_ID]
        → prints job_id, counts (total / tagged / untagged / skipped / missing / clusters)
        → plus an `other:` line for any status the four buckets do not cover
@@ -301,11 +319,14 @@ Typical session:
 
 ```bash
 export XAI_API_KEY=...
+gpsify run ~/Pictures/porto-2019 --hint "weekend in Porto, 2019"
+gpsify apply ~/Pictures/porto-2019     # copies → ~/.gpsify/jobs/<id>/copies/
+# or: gpsify apply ~/Pictures/porto-2019 --out ~/Pictures/porto-2019-tagged
+
+# the staged commands still work, by folder path or by the UUID ingest prints:
 gpsify ingest ~/Pictures/porto-2019 --hint "weekend in Porto, 2019"
-gpsify propose <job_id>
-gpsify review <job_id>
-gpsify apply <job_id>                  # copies → ~/.gpsify/jobs/<id>/copies/
-# or: gpsify apply <job_id> --out ~/Pictures/porto-2019-tagged
+gpsify propose ~/Pictures/porto-2019
+gpsify review ~/Pictures/porto-2019
 ```
 
 `--dry-run` always means **no side effects that cost money or mutate photos**. For `propose`, that is no xAI call and no public Nominatim call (cache reads are allowed). For `apply`, print the would-be `exiftool` argfile and write nothing. There is no `--offline` flag; `--dry-run` covers it. Live propose is the default of `propose` without `--dry-run`.
@@ -1518,5 +1539,14 @@ Incremental, each PR independently reviewable and mergeable on `main`. Later PRs
 - **Depends on:** PR 6
 - **Status:** **shipped** (provider + bake-off).
 - **Changes:** `--provider gemini` when `GEMINI_API_KEY` is set, defaulting to `gemini-2.5-flash` per [`docs/research/vision-model-selection.md`](research/vision-model-selection.md); same `PROMPT_V1` and `VisionGuess` schema as xAI. `estimate_usd` is keyed by model so a Gemini run is not priced at Grok rates. Neither provider reads the other's key. `scripts/bakeoff.py` scores any `provider:model` list against an album of already-geotagged photos — **the album's own EXIF GPS is the ground truth**, so no fixture corpus is checked in (real geotagged travel photos do not belong in a public repo, and `tests/fixtures/known/` was dropped for that reason). It reports Acc@1/25/200/750 km, median error, refusal rate, **actual `usage` incl. reasoning_tokens**, and real USD per model, which is the input for rewriting the `USD_PER_MILLION` coefficients. No GPS writes; Grok stays the default (K2).
+
+### PR 11 — One-command workflow and job handles (**post-v1**)
+
+- **Title:** `feat: gpsify run and folder-path job handles`
+- **Files:** `src/gpsify/cli.py`, `src/gpsify/store/index.py`, `src/gpsify/propose.py`, `tests/test_run_cli.py`
+- **Depends on:** PRs 3, 6, 7
+- **Status:** **shipped**.
+- **Changes:** `gpsify run <folder>` chains ingest → propose → review in one command and prints the `gpsify apply <folder>` follow-up; it writes no GPS, and K4 is untouched because review still gates every write. It **reports** a needed geocode pass instead of running one — the 50-uncached cap is an OSMF rail (K10) and routing around it silently would defeat the cap. `resolve_job_handle` turns a UUID, a folder path, or `last` into a `job_id` for every job-taking command, so the UUID `ingest` prints never has to be retyped; `ingest --relocate` still needs a literal UUID. Ambiguity (one folder, two `options_hash` values) resolves to the most recent ingest **and says so** rather than choosing silently. A UUID whose `job.sqlite` exists resolves with no index row, so a lost index orphans nothing. `JobIndex.list_jobs` breaks `last_ingest_at` ties on `rowid DESC` instead of `job_id`: timestamps are second-precision, and ordering by a random UUID made "most recent" non-deterministic.
+
 
 Each PR includes tests for the new surface and keeps `gpsify --help` working. There is no path that writes GPS without a stored current decision.

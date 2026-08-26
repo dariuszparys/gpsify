@@ -38,9 +38,17 @@ Exit codes: `0` ok · `1` partial (some photos errored/failed) · `2` config or 
 ## Pipeline
 
 ```
+run  ─────────────────────────────────────┐  (ingest → propose → review, one command)
 ingest → propose → review (or decide) → apply → undo
                 ↳ geocode (fills pins the uncached cap skipped; no vision spend)
 ```
+
+**Every `<job_id>` argument is a job handle: a UUID, a folder path, or `last`**
+(`store.index.resolve_job_handle`). A folder resolves against the global index by the
+canonical path `ingest` registered; one folder ingested both flat and `--recursive`
+holds two jobs, and the resolver takes the most recent *and prints which it picked*.
+A UUID whose `job.sqlite` is on disk resolves with no index row. `ingest --relocate`
+is the one exception and still takes a literal UUID.
 
 `ingest` walks and classifies a folder, hashes every file, reads EXIF in batched `exiftool` calls, and builds time+folder clusters. `propose` sends a lazily built 1280px preview to the selected vision provider (`--provider xai|gemini`), geocodes the returned *place name*, reconciles the two coordinate sources, and writes a `proposal` row. `review`/`decide` write a `decision` row. `apply` writes GPS from that decision. `undo` reverses it from a full-file backup. `geocode` (`run_geocode`, also in `propose.py`) re-runs only the geocode half for proposals left at `pin_source=none`, reading the stored `VisionGuess` back out of `proposal.raw_json` so no vision call is repeated.
 

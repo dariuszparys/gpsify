@@ -143,27 +143,59 @@ excluded. Enable billing on the key before pointing it at real photos.
 ## CLI
 
 ```text
+gpsify run <folder> [--hint TEXT] [--recursive] [--limit N] [--provider xai|gemini]
+                    [--port 8765] [--dry-run] [--no-review]
 gpsify ingest <folder> [--hint TEXT] [--recursive] [--relocate JOB_ID]
-gpsify propose <job_id> [--limit N] [--dry-run] [--no-context] [--provider xai|gemini] ...
-gpsify geocode <job_id> [--limit N] [--dry-run] [--geocode-uncached-max N]
-gpsify review <job_id> [--port 8765]
-gpsify decide <job_id> --photo ID --action accept|skip|accept_edited [--lat --lng]
-gpsify apply <job_id> [--out DIR] [--in-place] [--dry-run]
-gpsify undo <job_id> [--photo PATH]
-gpsify skip <job_id> --all-low [--yes]
-gpsify status [job_id] [--json]
-gpsify clean <job_id>
+gpsify propose <job> [--limit N] [--dry-run] [--no-context] [--provider xai|gemini] ...
+gpsify geocode <job> [--limit N] [--dry-run] [--geocode-uncached-max N]
+gpsify review <job> [--port 8765]
+gpsify decide <job> --photo ID --action accept|skip|accept_edited [--lat --lng]
+gpsify apply <job> [--out DIR] [--in-place] [--dry-run]
+gpsify undo <job> [--photo PATH]
+gpsify skip <job> --all-low [--yes]
+gpsify status [job] [--json]
+gpsify clean <job>
 ```
 
-Typical session:
+Typical session — one command from folder to review:
 
 ```bash
 export XAI_API_KEY=...
-uv run gpsify ingest ~/Pictures/porto-2019 --hint "weekend in Porto, 2019"
-uv run gpsify propose <job_id>
-uv run gpsify review <job_id>
-uv run gpsify apply <job_id>
+uv run gpsify run ~/Pictures/porto-2019 --hint "weekend in Porto, 2019"
+# review in the browser, then:
+uv run gpsify apply ~/Pictures/porto-2019
 ```
+
+`run` chains `ingest` → `propose` → `review`. It spends real money on vision calls
+with no confirmation prompt; `--dry-run` and `--limit N` are the escape hatches, and
+the running `est_usd` prints as it goes. `--no-review` stops after propose. It never
+writes GPS — only `apply` does.
+
+The staged commands still work, and `ingest` still prints the `job_id`:
+
+```bash
+uv run gpsify ingest ~/Pictures/porto-2019 --hint "weekend in Porto, 2019"
+uv run gpsify propose ~/Pictures/porto-2019
+uv run gpsify review ~/Pictures/porto-2019
+```
+
+### Job handles
+
+`<job>` above is a **job UUID, a folder path, or `last`** — you never have to copy a
+UUID. A folder resolves through the global index (`~/.gpsify/gpsify.sqlite`) by the
+same canonical path `ingest` registered; `last` is the most recent ingest. Because the
+resume key covers `{recursive: bool}`, one folder ingested both flat and `--recursive`
+holds two jobs — gpsify then takes the most recent and says which it picked:
+
+```text
+$ gpsify status ~/Pictures/porto-2019
+2 jobs share this folder; using the most recent: 9f060a67-… (recursive)
+```
+
+A UUID whose `job.sqlite` is on disk stays addressable even if its index row is gone,
+so a lost index orphans nothing. `ingest --relocate JOB_ID` is the one place that still
+needs a literal UUID: it rebinds a job to a new path, so resolving it *by* path would
+be circular.
 
 `apply` with no flags writes copies under `~/.gpsify/jobs/<id>/copies/`. `--in-place` requires `--i-mean-it` or a TTY confirm.
 
@@ -176,7 +208,7 @@ finishes just that half against the current `geocoder_url`, re-using the guesses
 already stored. It never calls a vision provider, so it costs nothing:
 
 ```bash
-uv run gpsify geocode <job_id> --dry-run          # how many uncached lookups are left?
+uv run gpsify geocode <job> --dry-run          # how many uncached lookups are left?
 uv run gpsify geocode <job_id> --geocode-uncached-max 200
 ```
 

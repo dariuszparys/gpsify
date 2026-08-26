@@ -1,4 +1,10 @@
-"""Typer CLI. Status and clean land in this slice (PR 9)."""
+"""Typer CLI. ``run`` and job handles land in this slice (PR 11).
+
+Every command that takes a job accepts a ``job_id`` UUID, a folder path, or
+``last`` — see ``store.index.resolve_job_handle``. ``ingest --relocate`` is the
+one exception and still needs a literal UUID: it rebinds a job to a new path,
+so resolving it *by* path would be circular.
+"""
 
 from __future__ import annotations
 
@@ -16,10 +22,10 @@ from gpsify.apply import ApplyError, run_apply
 from gpsify.config import load_settings
 from gpsify.geocode import GeocodeConfigError, require_geocoder_ready
 from gpsify.ingest import IngestError, run_ingest
-from gpsify.propose import ProposeError, run_geocode, run_propose
+from gpsify.propose import ProposeError, count_unpinned_proposals, run_geocode, run_propose
 from gpsify.review import REVIEW_HOST, ReviewError, create_app, list_low_rank_photos, serve_review
 from gpsify.status import StatusError, format_job_list, format_status, job_status, list_job_entries, run_clean
-from gpsify.store import DecisionError, JobRepo, StoreError
+from gpsify.store import DecisionError, JobRepo, StoreError, resolve_job_handle
 from gpsify.types import DecisionAction
 from gpsify.undo import UndoError, run_undo
 
@@ -44,6 +50,18 @@ def _unreachable(value: Never) -> Never:
     raise ReviewError(f"unhandled value: {value!r}")
 
 
+def _resolve_job(data_dir: Path, handle: str) -> str:
+    """Job handle -> job_id, echoing why an ambiguous handle resolved as it did."""
+    try:
+        resolved = asyncio.run(resolve_job_handle(data_dir, handle))
+    except StoreError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    if resolved.note:
+        typer.echo(resolved.note, err=True)
+    return resolved.job_id
+
+
 @app.callback()
 def _root(
     version: bool = typer.Option(
@@ -55,6 +73,127 @@ def _root(
     ),
 ) -> None:
     """gpsify — visual geolocation of untagged photos."""
+
+
+def _serve_review_ui(settings: object, job_id: str, port: int) -> None:
+    """Probe the job, print the loopback URL, open a browser, and block in uvicorn."""
+
+    async def _probe() -> None:
+        repo = await JobRepo.open(settings.data_dir, job_id)  # type: ignore[attr-defined]
+        await repo.close()
+
+    try:
+        asyncio.run(_probe())
+    except StoreError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    starlette_app = create_app(settings=settings, job_id=job_id)
+    url = f"http://{REVIEW_HOST}:{port}"
+    typer.echo(f"{url}  (loopback only; no LAN bind)")
+    webbrowser.open(url)
+    serve_review(starlette_app, port)
+
+
+@app.command()
+def run(
+    folder: Path = typer.Argument(..., help="Photo folder to ingest, propose, and review."),
+    hint: str | None = typer.Option(None, "--hint", help="Album / trip hint sent with vision calls."),
+    recursive: bool = typer.Option(False, "--recursive", help="Walk subdirectories."),
+    limit: int | None = typer.Option(None, "--limit", help="Max photos to propose this run."),
+    concurrency: int = typer.Option(3, "--concurrency", help="Parallel vision calls."),
+    provider: str | None = typer.Option(
+        None,
+        "--provider",
+        help="Vision provider: xai | gemini. Defaults to GPSIFY_VISION_PROVIDER.",
+    ),
+    geocode_uncached_max: int = typer.Option(
+        50,
+        "--geocode-uncached-max",
+        help="Public Nominatim uncached lookup cap for this run.",
+    ),
+    port: int = typer.Option(8765, "--port", help="Loopback port (binds 127.0.0.1 only)."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Plan only: no vision spend, no geocoder HTTP, no review."
+    ),
+    no_review: bool = typer.Option(
+        False, "--no-review", help="Stop after propose instead of serving the review UI."
+    ),
+) -> None:
+    """Ingest, propose, and open review in one command.
+
+    Spends real money on vision calls with no confirmation prompt; --dry-run and
+    --limit are the escape hatches. Writes no GPS: only 'gpsify apply' does that.
+    """
+    settings = load_settings()
+    try:
+        ingested = asyncio.run(
+            run_ingest(
+                folder,
+                hint=hint,
+                recursive=recursive,
+                data_dir=settings.data_dir,
+            )
+        )
+    except (IngestError, StoreError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    for warning in ingested.warnings:
+        typer.echo(f"warning: {warning}", err=True)
+    clusters = f"{ingested.clusters} cluster" + ("" if ingested.clusters == 1 else "s")
+    typer.echo(
+        f"scanning    {ingested.total} photos  "
+        f"({ingested.tagged} already tagged, {ingested.untagged} to place, {clusters})"
+    )
+
+    job_id = ingested.job_id
+    try:
+        proposed = asyncio.run(
+            run_propose(
+                job_id,
+                settings=settings,
+                limit=limit,
+                concurrency=concurrency,
+                dry_run=dry_run,
+                provider_name=provider,
+                geocode_uncached_max=geocode_uncached_max,
+                progress=lambda message: typer.echo(f"proposing   {message}"),
+            )
+        )
+    except (ProposeError, StoreError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    for warning in proposed.warnings:
+        typer.echo(f"warning: {warning}", err=True)
+
+    if dry_run:
+        typer.echo(f"dry-run: nothing spent, nothing written. job {job_id}")
+        raise typer.Exit(code=1 if proposed.error else 0)
+
+    # Report the geocoder cap rather than silently starting a second pass: the
+    # 50-uncached limit is an OSMF policy rail (K10), so hitting it is something
+    # the user should see.
+    unpinned = asyncio.run(_count_unpinned(settings.data_dir, job_id))
+    if unpinned:
+        typer.echo(
+            f"note        {unpinned} proposals still have no pin. "
+            f"Fill them without vision spend:  gpsify geocode {folder}"
+        )
+
+    if no_review:
+        typer.echo(f"job {job_id}. Review with:  gpsify review {folder}")
+        raise typer.Exit(code=1 if proposed.error else 0)
+
+    typer.echo(f"when you're done reviewing:  gpsify apply {folder}")
+    typer.echo("review      ", nl=False)
+    _serve_review_ui(settings, job_id, port)
+
+
+async def _count_unpinned(data_dir: Path, job_id: str) -> int:
+    repo = await JobRepo.open(data_dir, job_id)
+    try:
+        return await count_unpinned_proposals(repo)
+    finally:
+        await repo.close()
 
 
 @app.command()
@@ -98,7 +237,7 @@ def ingest(
 
 @app.command()
 def propose(
-    job_id: str = typer.Argument(..., help="Job UUID from ingest."),
+    job_id: str = typer.Argument(..., help="Job UUID, folder path, or 'last'."),
     limit: int | None = typer.Option(None, "--limit", help="Max photos to propose this run."),
     concurrency: int = typer.Option(3, "--concurrency", help="Parallel vision calls."),
     dry_run: bool = typer.Option(False, "--dry-run", help="No network; print planned calls and cache hits."),
@@ -121,6 +260,7 @@ def propose(
 ) -> None:
     """Call vision + geocode; write proposals. Does not write GPS."""
     settings = load_settings()
+    job_id = _resolve_job(settings.data_dir, job_id)
     try:
         summary = asyncio.run(
             run_propose(
@@ -147,7 +287,7 @@ def propose(
 
 @app.command()
 def geocode(
-    job_id: str = typer.Argument(..., help="Job UUID from ingest."),
+    job_id: str = typer.Argument(..., help="Job UUID, folder path, or 'last'."),
     limit: int | None = typer.Option(
         None, "--limit", help="Max unpinned proposals to geocode this run."
     ),
@@ -164,6 +304,7 @@ def geocode(
 ) -> None:
     """Geocode proposals left at pin_source=none. No vision call, no vision spend."""
     settings = load_settings()
+    job_id = _resolve_job(settings.data_dir, job_id)
     try:
         summary = asyncio.run(
             run_geocode(
@@ -184,36 +325,25 @@ def geocode(
 
 @app.command()
 def review(
-    job_id: str = typer.Argument(..., help="Job UUID from ingest."),
+    job_id: str = typer.Argument(..., help="Job UUID, folder path, or 'last'."),
     port: int = typer.Option(8765, "--port", help="Loopback port (binds 127.0.0.1 only)."),
 ) -> None:
     """Open the localhost review UI (loopback only)."""
     settings = load_settings()
+    # Config before job lookup: a missing contact email is the user's problem to
+    # fix regardless of which job they meant.
     try:
         require_geocoder_ready(settings)
     except GeocodeConfigError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
-
-    async def _probe() -> None:
-        repo = await JobRepo.open(settings.data_dir, job_id)
-        await repo.close()
-
-    try:
-        asyncio.run(_probe())
-    except StoreError as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=2) from exc
-    starlette_app = create_app(settings=settings, job_id=job_id)
-    url = f"http://{REVIEW_HOST}:{port}"
-    typer.echo(f"{url}  (loopback only; no LAN bind)")
-    webbrowser.open(url)
-    serve_review(starlette_app, port)
+    job_id = _resolve_job(settings.data_dir, job_id)
+    _serve_review_ui(settings, job_id, port)
 
 
 @app.command()
 def decide(
-    job_id: str = typer.Argument(..., help="Job UUID from ingest."),
+    job_id: str = typer.Argument(..., help="Job UUID, folder path, or 'last'."),
     photo: str = typer.Option(..., "--photo", help="Photo id to decide."),
     action: str = typer.Option(
         ...,
@@ -241,6 +371,7 @@ def decide(
         case _:
             _unreachable(action_enum)
     settings = load_settings()
+    job_id = _resolve_job(settings.data_dir, job_id)
 
     async def _run() -> str:
         repo = await JobRepo.open(settings.data_dir, job_id)
@@ -260,7 +391,7 @@ def decide(
 
 @app.command()
 def apply(
-    job_id: str = typer.Argument(..., help="Job UUID from ingest."),
+    job_id: str = typer.Argument(..., help="Job UUID, folder path, or 'last'."),
     out: Path | None = typer.Option(None, "--out", help="Write copies under DIR/<relpath>."),
     in_place: bool = typer.Option(False, "--in-place", help="Mutate sources (or RAW sidecars)."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print would-be writes; mutate nothing."),
@@ -282,6 +413,7 @@ def apply(
             raise typer.Exit(code=1)
         i_mean_it = True
     settings = load_settings()
+    job_id = _resolve_job(settings.data_dir, job_id)
     try:
         summary = asyncio.run(
             run_apply(
@@ -308,11 +440,12 @@ def apply(
 
 @app.command()
 def undo(
-    job_id: str = typer.Argument(..., help="Job UUID from ingest."),
+    job_id: str = typer.Argument(..., help="Job UUID, folder path, or 'last'."),
     photo: Path | None = typer.Option(None, "--photo", help="Limit undo to one source path."),
 ) -> None:
     """Restore the backup taken before exiftool (or delete/restore a RAW sidecar)."""
     settings = load_settings()
+    job_id = _resolve_job(settings.data_dir, job_id)
     try:
         summary = asyncio.run(
             run_undo(
@@ -331,7 +464,7 @@ def undo(
 
 @app.command("skip")
 def skip_cmd(
-    job_id: str = typer.Argument(..., help="Job UUID from ingest."),
+    job_id: str = typer.Argument(..., help="Job UUID, folder path, or 'last'."),
     all_low: bool = typer.Option(False, "--all-low", help="Preview low UI-rank photos."),
     yes: bool = typer.Option(False, "--yes", help="Write skip decisions without a TTY confirm."),
 ) -> None:
@@ -340,6 +473,7 @@ def skip_cmd(
         typer.echo("error: --all-low is required", err=True)
         raise typer.Exit(code=2)
     settings = load_settings()
+    job_id = _resolve_job(settings.data_dir, job_id)
 
     async def _list() -> list[dict]:
         repo = await JobRepo.open(settings.data_dir, job_id)
@@ -386,7 +520,9 @@ def skip_cmd(
 
 @app.command()
 def status(
-    job_id: str | None = typer.Argument(None, help="Job UUID. Omit to list jobs."),
+    job_id: str | None = typer.Argument(
+        None, help="Job UUID, folder path, or 'last'. Omit to list jobs."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Machine-readable rollup."),
 ) -> None:
     """Print job counts, dest root, and cost counters."""
@@ -400,6 +536,11 @@ def status(
             else:
                 typer.echo(format_job_list(entries))
             return
+    except (StatusError, StoreError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    job_id = _resolve_job(settings.data_dir, job_id)
+    try:
         rollup = asyncio.run(job_status(settings.data_dir, job_id))
     except (StatusError, StoreError) as exc:
         typer.echo(f"error: {exc}", err=True)
@@ -414,10 +555,11 @@ def status(
 
 @app.command()
 def clean(
-    job_id: str = typer.Argument(..., help="Job UUID from ingest."),
+    job_id: str = typer.Argument(..., help="Job UUID, folder path, or 'last'."),
 ) -> None:
     """Delete previews and thumbs; keep sqlite and backups."""
     settings = load_settings()
+    job_id = _resolve_job(settings.data_dir, job_id)
     try:
         summary = asyncio.run(run_clean(settings.data_dir, job_id))
     except (StatusError, StoreError) as exc:

@@ -9,20 +9,32 @@ from gpsify.store.db import (
     job_db_path,
     job_dir,
 )
-from gpsify.store.index import JobConflictError, JobIndex, options_hash
+from gpsify.store.index import (
+    LAST_HANDLE,
+    JobConflictError,
+    JobIndex,
+    ResolvedJob,
+    canonical_root,
+    options_hash,
+    resolve_job_handle,
+)
 from gpsify.store.repo import DecisionError, JobRepo
 
 __all__ = [
     "INDEX_DB_NAME",
+    "LAST_HANDLE",
     "SCHEMA_VERSION",
     "DecisionError",
     "JobConflictError",
     "JobIndex",
     "JobRepo",
+    "ResolvedJob",
     "SchemaError",
     "StoreError",
+    "canonical_root",
     "index_db_path",
     "job_db_path",
     "job_dir",
     "options_hash",
+    "resolve_job_handle",
 ]

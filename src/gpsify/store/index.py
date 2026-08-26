@@ -5,18 +5,32 @@ Resume key = canonical root path + ``options_hash`` (SHA-256 of canonical JSON
 
 Two simultaneous inserts of the same key: the ``UNIQUE`` constraint wins and
 the second caller opens the existing ``job_id``.
+
+``resolve_job_handle`` (PR 11) is the CLI's read side of that index: it turns a
+UUID, a folder path, or ``last`` into a ``job_id`` so no command makes the user
+retype the UUID ``ingest`` printed. It never registers or mutates a row.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
 
 import aiosqlite
 
-from gpsify.store.db import StoreError, index_db_path, open_index_db, utc_now_iso
+from gpsify.store.db import (
+    StoreError,
+    index_db_path,
+    job_db_path,
+    open_index_db,
+    utc_now_iso,
+)
+
+LAST_HANDLE = "last"
 
 
 class JobConflictError(StoreError):
@@ -84,12 +98,18 @@ class JobIndex:
         return _row(await cursor.fetchone())
 
     async def list_jobs(self) -> list[dict[str, Any]]:
-        """Newest ingest first. Empty when the index has no rows yet."""
+        """Newest ingest first. Empty when the index has no rows yet.
+
+        ``last_ingest_at`` is second-precision, so two registrations inside the
+        same second tie. ``rowid DESC`` breaks that tie by insertion order —
+        deterministic and still "most recent", where ordering by ``job_id``
+        would have picked a random UUID.
+        """
         cursor = await self._db.execute(
             """
             SELECT job_id, root_canonical, options_hash, created_at, last_ingest_at
             FROM job_index
-            ORDER BY last_ingest_at DESC, job_id
+            ORDER BY last_ingest_at DESC, rowid DESC
             """
         )
         return [dict(row) for row in await cursor.fetchall()]
@@ -173,3 +193,97 @@ class JobIndex:
         if row is None:
             raise StoreError(f"failed to relocate job_id {job_id!r}")
         return row
+
+
+@dataclass(frozen=True)
+class ResolvedJob:
+    """A ``job_id`` plus, when the handle was ambiguous, why this row won."""
+
+    job_id: str
+    root_canonical: str
+    note: str | None = None
+
+
+def _looks_like_uuid(handle: str) -> bool:
+    try:
+        uuid.UUID(handle)
+    except ValueError:
+        return False
+    return True
+
+
+def canonical_root(folder: Path | str) -> str:
+    """The ``root_canonical`` ingest would store for ``folder`` (``ingest.run_ingest``).
+
+    Kept byte-identical to the ingest side: expanduser, then ``resolve(strict=True)``.
+    A path that does not exist cannot match an index row, so the caller gets the
+    "no job for this folder" message rather than a stale prefix match.
+    """
+    return str(Path(folder).expanduser().resolve(strict=True))
+
+
+async def resolve_job_handle(data_dir: Path, handle: str) -> ResolvedJob:
+    """Turn a UUID, a folder path, or ``last`` into a registered ``job_id``.
+
+    Order matters: a UUID that is actually in the index wins outright, so a job
+    can always be addressed by the id ``ingest`` printed. ``last`` reads the
+    newest ``last_ingest_at``. Anything else is treated as a folder path.
+
+    One folder can hold two jobs — ``options_hash`` covers ``{"recursive": bool}``,
+    so the same root ingested both ways registers twice. Rather than fail, take the
+    most recently ingested and hand back a ``note`` for the caller to echo, so the
+    pick is never silent.
+    """
+    async with await JobIndex.open(data_dir) as index:
+        if _looks_like_uuid(handle):
+            row = await index.get(handle)
+            if row is not None:
+                return ResolvedJob(row["job_id"], row["root_canonical"])
+            # The index exists to resume by path; the job database is what makes
+            # a job openable. A UUID whose job.sqlite is on disk stays addressable
+            # even if the index row is missing, so a lost index orphans nothing.
+            if job_db_path(data_dir, handle).exists():
+                return ResolvedJob(handle, "")
+            raise StoreError(
+                f"no job with id {handle!r}. Run 'gpsify status' to list jobs."
+            )
+
+        jobs = await index.list_jobs()
+        if handle == LAST_HANDLE:
+            if not jobs:
+                raise StoreError("no jobs yet. Run 'gpsify ingest <folder>' first.")
+            newest = jobs[0]
+            return ResolvedJob(
+                newest["job_id"],
+                newest["root_canonical"],
+                note=f"using job {newest['job_id']} ({newest['root_canonical']})",
+            )
+
+        try:
+            root = canonical_root(handle)
+        except (OSError, RuntimeError) as exc:
+            raise StoreError(
+                f"not a job id, 'last', or an existing folder: {handle!r}"
+            ) from exc
+
+        matches = [row for row in jobs if row["root_canonical"] == root]
+        if not matches:
+            raise StoreError(
+                f"no job for folder {root}. "
+                f"Run 'gpsify ingest {handle}' first, or 'gpsify status' to list jobs."
+            )
+        if len(matches) == 1:
+            return ResolvedJob(matches[0]["job_id"], root)
+
+        # list_jobs() is ordered last_ingest_at DESC, so matches[0] is the newest.
+        winner = matches[0]
+        recursive_hash = options_hash(recursive=True)
+        scope = "recursive" if winner["options_hash"] == recursive_hash else "non-recursive"
+        return ResolvedJob(
+            winner["job_id"],
+            root,
+            note=(
+                f"{len(matches)} jobs share this folder; "
+                f"using the most recent: {winner['job_id']} ({scope})"
+            ),
+        )

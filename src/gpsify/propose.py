@@ -792,6 +792,20 @@ async def run_geocode(
 Unpinned = tuple[dict[str, Any], dict[str, Any], VisionGuess]
 
 
+async def count_unpinned_proposals(repo: JobRepo) -> int:
+    """How many current proposals a ``gpsify geocode`` pass would still pin.
+
+    ``gpsify run`` reports this rather than silently starting a second geocoding
+    pass: the uncached cap is an OSMF policy rail (K10), so hitting it is
+    something the user should see, not something the tool routes around.
+    """
+    photos = await repo.list_photos()
+    current_by_photo = {
+        str(row["photo_id"]): row for row in await repo.list_current_proposals()
+    }
+    return len(_select_unpinned(photos, current_by_photo, limit=None))
+
+
 def _select_unpinned(
     photos: Sequence[dict[str, Any]],
     current_by_photo: Mapping[str, dict[str, Any]],
