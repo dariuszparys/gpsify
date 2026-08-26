@@ -1,4 +1,4 @@
-"""Vision-model bake-off on photos whose real GPS you already have (PR 10).
+"""Vision-model bake-off on photos whose real GPS you already have.
 
 Answers the question no public leaderboard can: *for your photos, which model
 pins closest, and what does it actually cost?* Every number in
@@ -308,6 +308,13 @@ async def run_bakeoff(args: argparse.Namespace) -> int:
         for provider, model in specs:
             print(f"  would call {provider}:{model}")
         return 0
+    if args.limit is None and not args.yes:
+        print(
+            f"refusing to spend on {plan} with no bound. Pass --limit N to cap it, "
+            "--yes to score the whole album, or GPSIFY_DRY_RUN=1 to see the plan.",
+            file=sys.stderr,
+        )
+        return 2
     print(plan)
 
     options = VisionCallOptions(
@@ -388,7 +395,14 @@ async def run_bakeoff(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bakeoff",
-        description="Score vision models against photos whose GPS you already have.",
+        description=(
+            "Score vision models against photos whose GPS you already have. "
+            "Costs real money: one paid vision call per photo per model."
+        ),
+        epilog=(
+            "Scoring an album with no --limit requires --yes. "
+            "GPSIFY_DRY_RUN=1 prints the plan and spends nothing."
+        ),
     )
     parser.add_argument("album", help="Folder of already-geotagged photos.")
     parser.add_argument(
@@ -398,7 +412,14 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PROVIDER:MODEL",
         help="Repeatable, e.g. --model gemini:gemini-2.5-flash",
     )
-    parser.add_argument("--limit", type=int, default=None, help="Max photos to score.")
+    parser.add_argument(
+        "--limit", type=int, default=None, help="Max photos to score. Unset scores the album."
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Required to score an album with no --limit, since that spends without a bound.",
+    )
     parser.add_argument("--recursive", action="store_true", help="Walk subfolders.")
     parser.add_argument("--hint", default=None, help="Album hint passed to every model.")
     parser.add_argument(
