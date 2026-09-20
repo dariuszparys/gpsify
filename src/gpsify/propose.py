@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import statistics
 import time
@@ -31,7 +32,7 @@ from typing import Any, Never, TextIO
 from pydantic import ValidationError
 
 from gpsify.config import Settings
-from gpsify.exif import classify_media, is_processable
+from gpsify.exif import MediaKind, classify_media, exiftool_available, is_processable
 from gpsify.geocode import (
     DEFAULT_UNCACHED_MAX,
     PUBLIC_NOMINATIM_CAP_WARNING,
@@ -446,6 +447,7 @@ async def run_propose(
     settings: Settings,
     limit: int | None = None,
     concurrency: int = DEFAULT_CONCURRENCY,
+    max_cost: float | None = None,
     dry_run: bool = False,
     force: bool = False,
     no_context: bool = False,
@@ -457,6 +459,10 @@ async def run_propose(
     progress: ProgressFn | None = None,
 ) -> ProposeSummary:
     """Run propose. Does not write GPS. Raises ``ProposeError`` on usage/config."""
+    if max_cost is not None:
+        if not math.isfinite(max_cost) or max_cost <= 0:
+            raise ProposeError("--max-cost must be finite and > 0")
+        concurrency = 1
     if concurrency < 1:
         raise ProposeError("--concurrency must be >= 1")
     if limit is not None and limit < 1:
@@ -498,6 +504,11 @@ async def run_propose(
             row["photo_id"]: row for row in await repo.list_current_proposals()
         }
         selected = _select_photos(photos, current_by_photo, force=force, limit=limit)
+        if not exiftool_available() and any(
+            classify_media(Path(str(photo["path"]))) in {MediaKind.heic, MediaKind.raw, MediaKind.png}
+            for photo in selected
+        ):
+            raise ProposeError("exiftool is required for HEIC, RAW, and PNG; install it and re-run ingest before propose")
         summary = ProposeSummary(
             job_id=job_id,
             planned=len(selected),
@@ -541,9 +552,22 @@ async def run_propose(
         hint = job["hint"]
         folder_basename = Path(str(job["root_path"])).name
         sem = asyncio.Semaphore(concurrency)
+        stats_baseline = _prior_stats(job)[1]
+
+        async def checkpoint() -> None:
+            async with write_lock:
+                await _write_stats(
+                    repo, summary=summary, latencies=latencies,
+                    refusal_hist=refusal_hist, cache_hits=service.cache_hits,
+                    uncached=service.uncached_lookups, baseline=stats_baseline,
+                )
 
         async def process(photo: dict[str, Any]) -> None:
             async with sem:
+                if max_cost is not None and summary.est_usd >= max_cost:
+                    if "estimated cost budget reached; remaining photos can be resumed" not in summary.warnings:
+                        summary.warnings.append("estimated cost budget reached; remaining photos can be resumed")
+                    return
                 await _process_one(
                     repo,
                     photo,
@@ -563,9 +587,19 @@ async def run_propose(
                     log_handle=log_handle,
                     latencies=latencies,
                     refusal_hist=refusal_hist,
+                    checkpoint=checkpoint,
                 )
+                await checkpoint()
 
-        await asyncio.gather(*(process(photo) for photo in selected))
+        tasks = [asyncio.create_task(process(photo)) for photo in selected]
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await checkpoint()
+            raise
         if service.cap_stopped:
             warning = PUBLIC_NOMINATIM_CAP_WARNING
             summary.warnings.append(warning)
@@ -579,6 +613,7 @@ async def run_propose(
             refusal_hist=refusal_hist,
             cache_hits=service.cache_hits,
             uncached=service.uncached_lookups,
+            baseline=stats_baseline,
         )
         _emit(
             progress,
@@ -1009,6 +1044,7 @@ async def _process_one(
     log_handle: TextIO | None,
     latencies: list[float],
     refusal_hist: dict[str, int],
+    checkpoint: Callable[[], Awaitable[None]],
 ) -> None:
     photo_id = str(photo["id"])
     source = Path(str(photo["path"]))
@@ -1144,6 +1180,12 @@ async def _process_one(
 
     latency_ms = int((time.perf_counter() - started) * 1000)
     latencies.append(float(latency_ms))
+    usd = estimate_usd(usage, vision.model)
+    summary.est_usd += usd
+    summary.input_tokens += usage.input_tokens
+    summary.output_tokens += usage.output_tokens
+    summary.reasoning_tokens += usage.reasoning_tokens
+    await checkpoint()
     result = await geocode_and_reconcile(guess, service)
     rank = ui_rank(guess, result, proposed_siblings, gps_siblings)
     refuse = refuse_guess_reason(
@@ -1214,11 +1256,6 @@ async def _process_one(
         # Keep cluster context fresh for later photos.
         photo["status"] = photo_status.value
 
-    usd = estimate_usd(usage, vision.model)
-    summary.est_usd += usd
-    summary.input_tokens += usage.input_tokens
-    summary.output_tokens += usage.output_tokens
-    summary.reasoning_tokens += usage.reasoning_tokens
     if photo_status is PhotoStatus.proposed:
         summary.proposed += 1
     elif photo_status is PhotoStatus.refused:
@@ -1383,6 +1420,7 @@ async def _write_stats(
     refusal_hist: dict[str, int],
     cache_hits: int,
     uncached: int,
+    baseline: dict[str, Any] | None = None,
 ) -> None:
     """Merge this run into ``job.stats_json``.
 
@@ -1391,6 +1429,8 @@ async def _write_stats(
     really spent. ``last_run`` carries this invocation on its own.
     """
     existing, prior = _prior_stats(await repo.get_job())
+    if baseline is not None:
+        prior = baseline
     p50, p95 = _latency_percentiles(latencies)
     run_counts = {
         "planned": summary.planned,

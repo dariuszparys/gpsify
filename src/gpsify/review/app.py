@@ -14,7 +14,10 @@ so it gets the same caps.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from functools import partial
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from enum import Enum
 from pathlib import Path
@@ -72,6 +75,10 @@ class DecisionBody(BaseModel):
     lat: float | None = None
     lng: float | None = None
     place_name: str | None = None
+
+
+class BatchDecisionBody(DecisionBody):
+    photo_ids: list[str] = Field(min_length=1)
 
 
 class ClusterApplyBody(BaseModel):
@@ -327,23 +334,16 @@ async def _serve_derived(request: Request, *, preview: bool) -> Response:
         return _error("source missing", 404)
     job_root: Path = _state(request).job_root
     try:
-        dest = (
-            ensure_preview(
-                job_root,
-                photo_id,
-                source,
-                expected_sha256=str(photo["sha256"]),
-                kind=classify_media(source),
+        # Hashing, decoding and ExifTool subprocesses must not block HTTP.
+        async with _state(request).media_slots:
+            dest = await asyncio.to_thread(
+                partial(
+                    ensure_preview if preview else ensure_thumb,
+                    job_root, photo_id, source,
+                    expected_sha256=str(photo["sha256"]),
+                    kind=classify_media(source),
+                )
             )
-            if preview
-            else ensure_thumb(
-                job_root,
-                photo_id,
-                source,
-                expected_sha256=str(photo["sha256"]),
-                kind=classify_media(source),
-            )
-        )
     except MediaError as exc:
         return _error(str(exc), 404)
     return FileResponse(dest, media_type="image/jpeg")
@@ -431,6 +431,32 @@ async def api_decision(request: Request) -> Response:
             ),
         }
     )
+
+
+async def api_decisions(request: Request) -> Response:
+    """Bulk accept/skip; keep each photo's own proposal and report partial failures."""
+    repo: JobRepo = _state(request).repo
+    try:
+        body = BatchDecisionBody.model_validate(await request.json())
+    except (json.JSONDecodeError, ValidationError) as exc:
+        return _error(f"invalid body: {exc}")
+    if body.action not in {DecisionAction.accept, DecisionAction.skip}:
+        return _error("batch decisions support accept or skip only")
+    if body.lat is not None or body.lng is not None:
+        return _error("batch decisions must not copy coordinates")
+    photos, errors = [], []
+    for photo_id in dict.fromkeys(body.photo_ids):
+        try:
+            await repo.add_decision(photo_id, body.action)
+        except (DecisionError, StoreError) as exc:
+            errors.append({"photo_id": photo_id, "error": str(exc)})
+            continue
+        photos.append(serialize_photo(
+            await repo.get_photo(photo_id),
+            await repo.get_current_proposal(photo_id),
+            await repo.get_current_decision(photo_id),
+        ))
+    return _json({"photos": photos, "errors": errors, "counts": await repo.count_photos_by_status()})
 
 
 async def _apply_source_pin(
@@ -620,21 +646,31 @@ def create_app(
         if owned_client is not None:
             await owned_client.aclose()
 
+    mutation_lock = asyncio.Lock()
+
+    def serialized(endpoint: Callable[[Request], Awaitable[Response]]) -> Callable[[Request], Awaitable[Response]]:
+        async def handle(request: Request) -> Response:
+            async with mutation_lock:
+                return await endpoint(request)
+        return handle
+
     routes = [
         Route("/", index_page),
         Route("/api/job", api_job),
         Route("/api/photos", api_photos),
+        Route("/api/decisions", serialized(api_decisions), methods=["POST"]),
         Route("/api/photos/{photo_id}", api_photo_detail),
-        Route("/api/photos/{photo_id}/decision", api_decision, methods=["POST"]),
+        Route("/api/photos/{photo_id}/decision", serialized(api_decision), methods=["POST"]),
         Route("/api/thumb/{photo_id}", api_thumb),
         Route("/api/preview/{photo_id}", api_preview),
         Route("/api/clusters/{cluster_id}", api_cluster),
-        Route("/api/clusters/{cluster_id}/apply", api_cluster_apply, methods=["POST"]),
-        Route("/api/pin/apply", api_pin_apply, methods=["POST"]),
+        Route("/api/clusters/{cluster_id}/apply", serialized(api_cluster_apply), methods=["POST"]),
+        Route("/api/pin/apply", serialized(api_pin_apply), methods=["POST"]),
         Route("/api/geocode", api_geocode, methods=["POST"]),
         Mount("/static", StaticFiles(directory=STATIC_DIR), name="static"),
     ]
     app = Starlette(routes=routes, lifespan=lifespan)
+    app.state.media_slots = asyncio.Semaphore(2)
     app.state.settings = settings
     app.state.job_id = job_id
     app.state.repo = repo

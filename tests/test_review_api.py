@@ -746,3 +746,57 @@ def test_skip_all_low_preview_and_yes(data_dir: Path, monkeypatch: pytest.Monkey
     run(skipped())
     missing_flag = runner.invoke(cli_app, ["skip", JOB_ID])
     assert missing_flag.exit_code == 2
+
+
+def test_batch_accept_keeps_individual_pins_and_reports_errors(data_dir):
+    async def body():
+        repo = await _create_repo(data_dir)
+        first = await _add_photo(repo, suffix="1")
+        second = await _add_photo(repo, suffix="2")
+        await _proposal(repo, first, pin_lat=10, pin_lng=20)
+        await _proposal(repo, second, pin_lat=30, pin_lng=40)
+        client, _, cache, _ = await _client_for(data_dir, repo)
+        try:
+            response = await client.post("/api/decisions", json={"action": "accept", "photo_ids": [first, second, "missing", first]})
+            assert response.status_code == 200
+            payload = response.json()
+            assert len(payload["photos"]) == 2
+            assert len(payload["errors"]) == 1
+            assert (await repo.get_current_decision(first))["lat"] == 10
+            assert (await repo.get_current_decision(second))["lat"] == 30
+            response = await client.post("/api/decisions", json={"action": "accept", "photo_ids": [first], "lat": 1, "lng": 2})
+            assert response.status_code == 400
+        finally:
+            await client.aclose()
+            await cache.close()
+            await repo.close()
+    run(body())
+
+
+def test_thumbnail_generation_does_not_block_job_requests(data_dir, tmp_path, monkeypatch):
+    import threading
+    started, release = threading.Event(), threading.Event()
+    image = tmp_path / "photo.jpg"
+    write_test_jpeg(image)
+    def slow_thumb(*args, **kwargs):
+        started.set()
+        release.wait(timeout=5)
+        return image
+    monkeypatch.setattr("gpsify.review.app.ensure_thumb", slow_thumb)
+    async def body():
+        repo = await _create_repo(data_dir)
+        photo = await _add_photo(repo, suffix="1", path=image)
+        client, _, cache, _ = await _client_for(data_dir, repo)
+        request = asyncio.create_task(client.get(f"/api/thumb/{photo}"))
+        try:
+            assert await asyncio.to_thread(started.wait, 2)
+            response = await asyncio.wait_for(client.get("/api/job"), timeout=1)
+            assert response.status_code == 200
+            assert not request.done()
+        finally:
+            release.set()
+            await request
+            await client.aclose()
+            await cache.close()
+            await repo.close()
+    run(body())

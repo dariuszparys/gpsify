@@ -691,3 +691,45 @@ def test_copy_mode_dest_diverged_when_copy_edited(data_dir: Path, tmp_path: Path
             assert receipt["error"] == DEST_DIVERGED
 
     run(check())
+
+@pytest.mark.parametrize("in_place", [True, False])
+def test_undo_preserves_later_edits(tmp_path: Path, in_place: bool) -> None:
+    from gpsify.undo import _undo_dest
+    from gpsify.media import hash_file
+    dest = tmp_path / "photo.jpg"
+    backup = tmp_path / "backup.bin"
+    backup.write_bytes(b"original")
+    dest.write_bytes(b"gpsify output")
+    receipt = {"dest_path": str(dest), "in_place": in_place,
+               "backup_path": str(backup), "written_sha256": hash_file(dest)}
+    dest.write_bytes(b"later edits")
+    assert _undo_dest({"relpath": "photo.jpg", "path": str(dest)}, receipt) == "dest_diverged"
+    assert dest.read_bytes() == b"later edits"
+
+
+def test_undo_raw_preserves_modified_copy_and_sidecar(tmp_path):
+    from gpsify.undo import _undo_dest
+    from gpsify.media import hash_file
+    raw = tmp_path / "photo.cr2"
+    sidecar = tmp_path / "photo.xmp"
+    raw.write_bytes(b"original raw")
+    original_hash = hash_file(raw)
+    sidecar.write_bytes(b"gpsify sidecar")
+    receipt = {"dest_path": str(sidecar), "in_place": False,
+               "backup_path": None, "written_sha256": hash_file(sidecar)}
+    raw.write_bytes(b"later raw edits")
+    photo = {"relpath": "photo.cr2", "path": "/source/photo.cr2", "sha256": original_hash}
+    assert _undo_dest(photo, receipt) == "source_copy_diverged"
+    assert raw.read_bytes() == b"later raw edits"
+    assert sidecar.read_bytes() == b"gpsify sidecar"
+
+
+def test_undo_missing_raw_backup_preserves_sidecar(tmp_path):
+    from gpsify.undo import _undo_dest
+    from gpsify.media import hash_file
+    sidecar = tmp_path / "photo.xmp"
+    sidecar.write_bytes(b"gpsify sidecar")
+    receipt = {"dest_path": str(sidecar), "in_place": True,
+               "backup_path": str(tmp_path / "missing.xmp"), "written_sha256": hash_file(sidecar)}
+    assert _undo_dest({"relpath": "photo.cr2"}, receipt) == "backup_missing"
+    assert sidecar.is_file()

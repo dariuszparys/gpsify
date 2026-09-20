@@ -95,12 +95,36 @@ def _serve_review_ui(settings: object, job_id: str, port: int) -> None:
 
 
 @app.command()
+def doctor() -> None:
+    """Check local photo dependencies and configuration without network calls."""
+    from gpsify.exif import exiftool_available
+    from gpsify.media import heic_plugin_available
+
+    settings = load_settings()
+    tool = exiftool_available()
+    heic = heic_plugin_available()
+    typer.echo("exiftool: " + ("available" if tool else "missing — install exiftool (macOS: brew install exiftool)"))
+    typer.echo("HEIC previews: " + ("available" if heic else "missing — uv sync --extra heic"))
+    key = settings.xai_api_key if settings.vision_provider == "xai" else settings.gemini_api_key
+    typer.echo(f"{settings.vision_provider} API key: {'configured' if key else 'missing'}")
+    try:
+        require_geocoder_ready(settings)
+        typer.echo("geocoder: configured")
+    except GeocodeConfigError as exc:
+        typer.echo(f"geocoder: {exc}")
+        raise typer.Exit(code=1) from exc
+    if not tool or not heic or not key:
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def run(
     folder: Path = typer.Argument(..., help="Photo folder to ingest, propose, and review."),
     hint: str | None = typer.Option(None, "--hint", help="Album / trip hint sent with vision calls."),
     recursive: bool = typer.Option(False, "--recursive", help="Walk subdirectories."),
     limit: int | None = typer.Option(None, "--limit", help="Max photos to propose this run."),
     concurrency: int = typer.Option(3, "--concurrency", help="Parallel vision calls."),
+    max_cost: float | None = typer.Option(None, "--max-cost", help="Estimated USD stopping threshold; serializes calls, may overshoot by one call."),
     provider: str | None = typer.Option(
         None,
         "--provider",
@@ -153,6 +177,7 @@ def run(
                 settings=settings,
                 limit=limit,
                 concurrency=concurrency,
+                max_cost=max_cost,
                 dry_run=dry_run,
                 provider_name=provider,
                 geocode_uncached_max=geocode_uncached_max,
@@ -240,6 +265,7 @@ def propose(
     job_id: str = typer.Argument(..., help="Job UUID, folder path, or 'last'."),
     limit: int | None = typer.Option(None, "--limit", help="Max photos to propose this run."),
     concurrency: int = typer.Option(3, "--concurrency", help="Parallel vision calls."),
+    max_cost: float | None = typer.Option(None, "--max-cost", help="Estimated USD stopping threshold; serializes calls, may overshoot by one call."),
     dry_run: bool = typer.Option(False, "--dry-run", help="No network; print planned calls and cache hits."),
     force: bool = typer.Option(False, "--force", help="Re-send photos that already have a current proposal."),
     no_context: bool = typer.Option(
@@ -268,6 +294,7 @@ def propose(
                 settings=settings,
                 limit=limit,
                 concurrency=concurrency,
+                max_cost=max_cost,
                 dry_run=dry_run,
                 force=force,
                 no_context=no_context,

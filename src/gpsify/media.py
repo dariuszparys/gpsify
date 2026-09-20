@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import io
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Never
 
@@ -37,7 +38,7 @@ MIN_RAW_PREVIEW_EDGE = 256
 HASH_CHUNK_SIZE = 1024 * 1024
 RAW_PREVIEW_TAGS = ("JpgFromRaw", "PreviewImage", "OtherImage", "ThumbnailImage")
 HEIC_INSTALL_HINT = (
-    "HEIC requires pillow-heif. Install with: pip install 'gpsify[heic]'"
+    "HEIC requires pillow-heif. Install with: uv sync --extra heic"
 )
 
 
@@ -214,7 +215,15 @@ def _ensure_derived(
         long_edge=long_edge,
     )
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(jpeg)
+    # Concurrent thumbnail requests must never observe a partially written JPEG.
+    with tempfile.NamedTemporaryFile(dir=dest.parent, suffix=".jpg", delete=False) as handle:
+        temporary = Path(handle.name)
+        try:
+            handle.write(jpeg)
+            handle.close()
+            temporary.replace(dest)
+        finally:
+            temporary.unlink(missing_ok=True)
     return dest
 
 

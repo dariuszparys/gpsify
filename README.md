@@ -40,13 +40,19 @@ One paid vision call per photo. There is no confirmation prompt before spending.
 | 100 photos | ~$0.60–$1.50 | ~$0.18 |
 | 2,000 photos | ~$12–$30 | ~$3.60 |
 
-Three escape hatches, in the order you should reach for them:
+Controls for previewing or limiting a run:
 
 - `GPSIFY_DRY_RUN=1` — blocks every paid call and every write; prints what it *would* do.
 - `--dry-run` — the same, per command.
 - `--limit N` — cap how many photos this run proposes.
+- `--max-cost USD` — stop scheduling photos when this run's reported usage reaches
+  the estimated USD threshold. Available on `run` and `propose`; budgeted runs
+  serialize calls regardless of `--concurrency`. The final call can overshoot.
+  Pricing is an estimate, and failed/refused requests without usage are not counted,
+  so this is not a hard provider billing cap. Remaining photos can be resumed.
 
-The running `est_usd` total prints as `propose` goes, and `gpsify status --json` reports cumulative spend for the life of the job.
+The running `est_usd` total prints as `propose` goes, and `gpsify status --json` reports cumulative spend for the life of the job. Reported token usage is
+checkpointed immediately after each successful vision response, before geocoding.
 
 ## Requirements
 
@@ -55,20 +61,14 @@ The running `est_usd` total prints as `propose` goes, and `gpsify status --json`
 
 ### Why `exiftool` is effectively required
 
-gpsify runs without it, but EXIF reads fall back to Pillow / Piexif, which is **JPEG-only**. On a folder of real photos that means:
+JPEG-only folders work with the Pillow/Piexif fallback. Ingest refuses folders
+containing HEIC, RAW, or PNG when ExifTool is unavailable: unreadable metadata
+must never be treated as proof that a photo has no GPS. Install ExifTool and
+re-run ingest before proposing those formats.
 
-- **HEIC EXIF is skipped entirely.** An already-geotagged HEIC ingests as `untagged` and would be proposed a new location. This is the one that costs you data.
-- HEIC and RAW capture times are missing, so those photos fall out of time clustering.
-- RAW files read as no EXIF (a sibling `.xmp` sidecar is still read), and RAW preview extract is unavailable.
-- `apply` fails every HEIC with `HEIC write requires exiftool`.
-
-`ingest` warns when it is missing:
-
-```
-warning: exiftool not found; using Pillow/Piexif for JPEG EXIF only. HEIC GPS detection skipped.
-```
-
-JPEG-only folders are fully supported on the fallback path.
+Run `uv run gpsify doctor` to check ExifTool, HEIC preview support, the selected
+provider's API key, and geocoder configuration. It makes no network calls and
+never prints credentials. Exit code 1 means a capability or configuration is missing.
 
 ## Install
 
@@ -207,10 +207,11 @@ excluded. Enable billing on the key before pointing it at real photos.
 ## CLI
 
 ```text
-gpsify run <folder> [--hint TEXT] [--recursive] [--limit N] [--provider xai|gemini]
+gpsify doctor
+gpsify run <folder> [--hint TEXT] [--recursive] [--limit N] [--max-cost USD] [--provider xai|gemini]
                     [--port 8765] [--dry-run] [--no-review]
 gpsify ingest <folder> [--hint TEXT] [--recursive] [--relocate JOB_ID]
-gpsify propose <job> [--limit N] [--dry-run] [--no-context] [--provider xai|gemini] ...
+gpsify propose <job> [--limit N] [--max-cost USD] [--dry-run] [--no-context] [--provider xai|gemini] ...
 gpsify geocode <job> [--limit N] [--dry-run] [--geocode-uncached-max N]
 gpsify review <job> [--port 8765]
 gpsify decide <job> --photo ID --action accept|skip|accept_edited [--lat --lng]
@@ -248,6 +249,10 @@ A UUID whose `job.sqlite` is on disk stays addressable even if its index row is 
 so a lost index orphans nothing. `ingest --relocate JOB_ID` is the one place that still
 needs a literal UUID: it rebinds a job to a new path, so resolving it *by* path would
 be circular.
+
+Undo checks the destination against the recorded post-write hash before restoring
+or deleting it. A later edit is preserved and reported as `dest_diverged`; modified
+RAW copies are also preserved. Conflicts keep their receipts available for retry.
 
 `apply` with no flags writes copies under `~/.gpsify/jobs/<id>/copies/`. `--in-place` requires `--i-mean-it` or a TTY confirm.
 
@@ -305,7 +310,7 @@ instance; a self-hosted Nominatim switches the cap off entirely.
 ## Limitations
 
 - **A wrong pin is possible and expected.** Vision geolocation is a guess. gpsify is built around that: it shows the model's own coordinate next to the geocoder's, ranks its confidence, and makes you accept. Do not batch-accept without looking.
-- **`exiftool` is effectively required** — see [above](#why-exiftool-is-effectively-required). Without it, a geotagged HEIC ingests as untagged and would be proposed a new location.
+- **`exiftool` is required for HEIC, RAW, and PNG metadata.** Ingest refuses those formats when it is missing; JPEG-only fallback remains available.
 - **RAW is never rewritten.** RAW photos get a sibling `.xmp` sidecar; the pixel data is never touched. Your RAW converter has to read sidecars for the tag to show up.
 - **Photos.app libraries are refused.** gpsify will not open a `*.photoslibrary` bundle. Export first.
 - **The geocoder must be Nominatim-shaped.** A self-hosted Nominatim works; Photon, Mapbox, and Google do not.
@@ -315,12 +320,21 @@ instance; a self-hosted Nominatim switches the cap off entirely.
 
 ## Tests
 
-**GitHub Actions is the source of truth** for CI. The workflow runs `uv sync --locked` then `uv run pytest --disable-socket --allow-unix-socket` with `GPSIFY_DRY_RUN=1`. Unix sockets are allowed so asyncio/aiosqlite can create an event loop; TCP/UDP stay blocked. No live xAI, Nominatim, or GPS writes.
+**GitHub Actions is the source of truth** for CI. The workflow runs `uv sync --locked` then `uv run pytest --disable-socket --allow-unix-socket` with `GPSIFY_DRY_RUN=1`. Unix sockets are allowed so asyncio/aiosqlite can create an event loop; TCP/UDP stay blocked. The Ubuntu job covers dependency fallback paths. The macOS job installs ExifTool
+and HEIC support and also runs Chromium integration tests. No live AI or geocoder
+calls occur; write tests use temporary photos.
 
 Locally:
 
 ```bash
 uv run pytest --disable-socket --allow-unix-socket -q
+```
+
+Browser tests run the real review server on loopback with generated photos:
+
+```bash
+uv run playwright install chromium
+uv run pytest browser_tests -q
 ```
 
 HEIC and live RAW-extract tests skip when `pillow-heif` / `exiftool` are missing.

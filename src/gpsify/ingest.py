@@ -32,6 +32,7 @@ from gpsify.exif import (
     MediaKind,
     XMP_EXTS,
     classify_media,
+    exiftool_available,
     is_processable,
     read_exif_batch,
 )
@@ -115,6 +116,15 @@ async def run_ingest(
     opt_hash = options_hash(recursive=recursive)
     warnings: list[str] = []
 
+    disk_files = _walk_and_hash(root, recursive=recursive)
+    if not exiftool_available() and any(
+        item.kind in {MediaKind.heic, MediaKind.raw, MediaKind.png} for item in disk_files
+    ):
+        raise IngestError(
+            "exiftool is required to read HEIC, RAW, and PNG metadata safely. "
+            "Install exiftool, then re-run ingest. Run gpsify doctor for diagnostics."
+        )
+
     index = await JobIndex.open(data_dir)
     repo: JobRepo | None = None
     try:
@@ -139,7 +149,6 @@ async def run_ingest(
                 hint=hint,
             )
 
-        disk_files = _walk_and_hash(root, recursive=recursive)
         if not disk_files and not recursive:
             subdirs = _count_walkable_subdirs(root)
             if subdirs:

@@ -878,3 +878,47 @@ def test_geocode_cache_hit_skips_provider(
     assert summary.proposed == 1
     assert geocoder.queries == [PORTO]
     assert summary.cache_hits == 1
+
+
+def test_budget_serializes_calls_and_checkpoints_without_double_counting(data_dir, tmp_path):
+    folder = tmp_path / "album"
+    folder.mkdir()
+    for i in range(3):
+        write_test_jpeg(folder / f"{i}.jpg")
+    job = run(run_ingest(folder, data_dir=data_dir))
+    provider = FakeVisionProvider(guess_result=_guess(), usage=Usage(input_tokens=1000, output_tokens=1000, reasoning_tokens=0))
+    summary = run(run_propose(job.job_id, settings=_settings(data_dir), vision=provider,
+                              geocoder=FakeGeocoder(), max_cost=0.001, concurrency=3))
+    assert len(provider.calls) == 1
+    assert summary.warnings
+    async def check():
+        repo = await JobRepo.open(data_dir, job.job_id)
+        try:
+            stats = json.loads((await repo.get_job())["stats_json"])["propose"]
+            assert stats["est_usd"] == pytest.approx(summary.est_usd)
+            assert stats["input_tokens"] == 1000
+            assert stats["runs"] == 1
+            assert (await repo.count_photos_by_status())["pending"] == 2
+        finally:
+            await repo.close()
+    run(check())
+
+
+def test_spend_survives_failure_after_vision(data_dir, tmp_path, monkeypatch):
+    job = _ingest_plain(tmp_path / "album", data_dir)
+    provider = FakeVisionProvider(guess_result=_guess())
+    async def fail_geocode(*args):
+        raise RuntimeError("interrupted after paid response")
+    monkeypatch.setattr("gpsify.propose.geocode_and_reconcile", fail_geocode)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        run(run_propose(job.job_id, settings=_settings(data_dir), vision=provider, geocoder=FakeGeocoder()))
+    async def check():
+        repo = await JobRepo.open(data_dir, job.job_id)
+        try:
+            stats = json.loads((await repo.get_job())["stats_json"])["propose"]
+            assert stats["input_tokens"] == provider.usage.input_tokens
+            assert stats["est_usd"] == pytest.approx(estimate_usd(provider.usage, provider.model))
+            assert stats["runs"] == 1
+        finally:
+            await repo.close()
+    run(check())

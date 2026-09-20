@@ -17,11 +17,12 @@ env:
 
 jobs:
   test:
-    name: pytest (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: pytest (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest]
         python-version: ["3.12"]
     steps:
       - name: Checkout
@@ -35,8 +36,29 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
 
+      - name: Install photo dependencies
+        if: runner.os == 'macOS'
+        run: brew install exiftool
+
       - name: Sync project and dev group
         run: uv sync --locked
 
-      - name: Run tests with network disabled
+      - name: Install HEIC support
+        if: runner.os == 'macOS'
+        run: uv sync --locked --extra heic
+
+      - name: Run fallback tests with network disabled
+        if: runner.os == 'Linux'
         run: uv run pytest --disable-socket --allow-unix-socket -q
+
+      - name: Run photo tests with network disabled
+        if: runner.os == 'macOS'
+        run: uv run --extra heic pytest --disable-socket --allow-unix-socket -q
+
+      - name: Install Chromium
+        if: runner.os == 'macOS'
+        run: uv run playwright install chromium
+
+      - name: Browser integration tests (loopback only)
+        if: runner.os == 'macOS'
+        run: uv run --extra heic pytest browser_tests -q

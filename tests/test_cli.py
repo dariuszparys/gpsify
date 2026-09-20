@@ -91,3 +91,19 @@ def test_apply_in_place_without_confirm_exits_2() -> None:
     combined = _plain(f"{result.stdout}{result.stderr}").lower()
     assert "i-mean-it" in combined
     assert "not implemented" not in combined
+
+
+def test_doctor_reports_dependencies_without_exposing_keys(monkeypatch):
+    from gpsify.cli import app
+    from typer.testing import CliRunner
+    monkeypatch.setattr("gpsify.exif.exiftool_available", lambda: False)
+    monkeypatch.setattr("gpsify.media.heic_plugin_available", lambda: False)
+    monkeypatch.setenv("GPSIFY_VISION_PROVIDER", "xai")
+    monkeypatch.setenv("XAI_API_KEY", "secret-do-not-print")
+    monkeypatch.setenv("NOMINATIM_CONTACT", "test@example.com")
+    result = CliRunner().invoke(app, ["doctor"])
+    assert result.exit_code == 1
+    assert "brew install exiftool" in result.output
+    assert "uv sync --extra heic" in result.output
+    assert "configured" in result.output
+    assert "secret-do-not-print" not in result.output

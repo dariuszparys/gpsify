@@ -399,24 +399,24 @@ async function loadPhotos({ keepAnchor = true } = {}) {
 async function decideMany(action, extra) {
   const ids = [...state.selection];
   if (!ids.length) return;
-  let ok = 0;
-  const failures = [];
-  for (const id of ids) {
-    try {
-      await api.decide(id, { action, ...(extra || {}) });
-      ok += 1;
-    } catch (err) {
-      failures.push(String((err && err.message) || err));
-    }
+  try {
+    const result = await api.decideMany({ photo_ids: ids, action, ...(extra || {}) });
+    const updates = new Map(result.photos.map((p) => [p.id, p]));
+    state.photos = state.photos.map((p) => updates.get(p.id) || p).filter((p) => {
+      if (state.filter === "needs_review") return p.status === "proposed";
+      if (state.filter === "accepted") return ["accepted", "accepted_edited"].includes(p.status);
+      if (state.filter === "refused") return p.status === "refused";
+      return true;
+    });
+    state.job.counts = result.counts;
+    state.selection = new Set([...state.selection].filter((id) => state.photos.some((p) => p.id === id)));
+    renderFilters();
+    renderPhotos();
+    setStatus(`${action}: ${result.photos.length} photos` +
+      (result.errors.length ? `, ${result.errors.length} failed — ${result.errors[0].error}` : ""), Boolean(result.errors.length));
+  } catch (err) {
+    reportError(err);
   }
-  const noun = ok === 1 ? "photo" : "photos";
-  setStatus(
-    failures.length
-      ? `${action}: ${ok} ${noun}, ${failures.length} failed — ${failures[0]}`
-      : `${action}: ${ok} ${noun}`,
-    failures.length > 0,
-  );
-  await loadPhotos();
 }
 
 /* Client-side mirror of app.batch_needs_confirm, for the dialog copy only. The
@@ -497,7 +497,10 @@ async function applyPinToSelection() {
   } catch (err) {
     reportError(err);
   }
+  const message = $("status-msg").textContent;
+  const isError = $("status-msg").classList.contains("error");
   await loadPhotos();
+  setStatus(message, isError);
 }
 
 async function runGeocode(query) {

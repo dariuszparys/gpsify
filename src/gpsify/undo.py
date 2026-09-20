@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Never
 
 from gpsify.exif import MediaKind, classify_media
+from gpsify.media import hash_file
 from gpsify.propose import LOCK_FILENAME, JobExclusiveLock, ProposeError
 from gpsify.store import JobRepo, StoreError, job_dir
 from gpsify.types import DecisionAction, PhotoStatus, WriteReceiptStatus
@@ -107,20 +108,12 @@ async def run_undo(
             if row is None:
                 summary.failed += 1
                 continue
-            error = _undo_dest(row, receipt)
+            try:
+                error = _undo_dest(row, receipt)
+            except OSError as exc:
+                error = f"undo_io_error: {exc}"
             if error is not None:
-                await repo.upsert_write_receipt(
-                    photo_id=receipt["photo_id"],
-                    decision_id=str(receipt["decision_id"]),
-                    dest_path=str(receipt["dest_path"]),
-                    in_place=bool(receipt["in_place"]),
-                    status=WriteReceiptStatus.failed,
-                    error=error,
-                    written_at=receipt.get("written_at"),
-                    written_sha256=receipt.get("written_sha256"),
-                    backup_path=receipt.get("backup_path"),
-                    receipt_id=str(receipt["id"]),
-                )
+                summary.warnings.append(f"{receipt['photo_id']}: {error}")
                 summary.failed += 1
                 continue
             await repo.upsert_write_receipt(
@@ -139,6 +132,8 @@ async def run_undo(
 
         await _restore_photo_statuses(repo, photos)
         if progress is not None:
+            for warning in summary.warnings:
+                progress(f"warning: {warning}")
             progress(f"undone: {summary.undone}  failed: {summary.failed}  skipped: {summary.skipped}")
         return summary
     finally:
@@ -175,6 +170,17 @@ def _undo_dest(photo: dict[str, Any], receipt: dict[str, Any]) -> str | None:
     kind = classify_media(Path(str(photo["relpath"])))
     backup_raw = receipt.get("backup_path")
     backup = Path(backup_raw) if backup_raw else None
+    if dest.is_file() and (
+        not receipt.get("written_sha256")
+        or hash_file(dest) != receipt["written_sha256"]
+    ):
+        return "dest_diverged"
+    if kind is MediaKind.raw and not in_place:
+        image_copy = dest.with_suffix(Path(str(photo["path"])).suffix)
+        if image_copy.is_file() and hash_file(image_copy) != photo["sha256"]:
+            return "source_copy_diverged"
+    if kind is MediaKind.raw and backup is not None and not backup.is_file():
+        return "backup_missing"
     match kind:
         case MediaKind.jpeg | MediaKind.png | MediaKind.heic:
             if in_place:

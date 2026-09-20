@@ -10,7 +10,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-**`exiftool` must be on `PATH`** (`brew install exiftool`). Without it, EXIF reads fall back to Pillow/Piexif — JPEG-only — so HEIC EXIF is skipped entirely, a **geotagged HEIC ingests as `untagged`** and would be proposed a new location, HEIC/RAW capture times drop out of clustering, and `apply` fails every HEIC with `HEIC write requires exiftool`. `ingest` warns when it is missing; the fallback exists for JPEG-only folders and the tests, not for real libraries.
+**`exiftool` must be on `PATH`** (`brew install exiftool`). Ingest refuses
+HEIC/RAW/PNG folders without it; JPEG-only folders can use Pillow/Piexif.
+`gpsify doctor` checks dependencies and configuration without network calls.
 
 **uv is the only supported workflow.** Never `pip install`, `python -m venv`, or a bare `python`/`pytest` — run everything through `uv run`.
 
@@ -23,9 +25,9 @@ uv run pytest --disable-socket --allow-unix-socket tests/test_apply.py::test_nam
 uv run pytest -m live                                     # opt-in, hits real APIs
 ```
 
-`--allow-unix-socket` is required: asyncio/aiosqlite need it to create an event loop. TCP/UDP stay blocked so nothing reaches xAI or Nominatim. `.github/workflows/ci.yml` is the source of truth and runs `uv sync --locked` then that same pytest line with `GPSIFY_DRY_RUN=1`. CI is pytest-only — no linter or type checker is configured.
+`--allow-unix-socket` is required: asyncio/aiosqlite need it to create an event loop. TCP/UDP stay blocked so nothing reaches xAI or Nominatim. `.github/workflows/ci.yml` is the source of truth and runs `uv sync --locked` then that same pytest line with `GPSIFY_DRY_RUN=1`. CI includes Python tests on Ubuntu/macOS and Chromium integration tests on macOS; no linter or type checker is configured.
 
-Dependencies: add with `uv add` (`uv add --group dev` for tooling), never by hand-editing `pyproject.toml`, so `uv.lock` stays in step — CI runs `--locked` and fails on drift. Dev tooling lives in `[dependency-groups]`; `heic` (`pillow-heif`) is the only runtime extra, and CI deliberately syncs without it so the HEIC-skip paths get exercised.
+Dependencies: add with `uv add` (`uv add --group dev` for tooling), never by hand-editing `pyproject.toml`, so `uv.lock` stays in step — CI runs `--locked` and fails on drift. Dev tooling lives in `[dependency-groups]`; `heic` (`pillow-heif`) is the only runtime extra, and the Ubuntu CI job syncs without it for fallback coverage; macOS installs it and ExifTool.
 
 `pythonpath = ["src"]` in `pyproject.toml` means tests import `gpsify` without an install step; `tests/` is on `sys.path` too, so `from jpeg_factory import ...` works.
 

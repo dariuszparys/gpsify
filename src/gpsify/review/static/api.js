@@ -27,6 +27,7 @@ export const api = {
   job: () => request("/api/job"),
   photos: (filter) => request(`/api/photos?status=${encodeURIComponent(filter)}`),
   cluster: (id) => request(`/api/clusters/${id}`),
+  decideMany: (payload) => post("/api/decisions", payload),
   decide: (photoId, payload) => post(`/api/photos/${photoId}/decision`, payload),
   /* One accepted pin onto a hand-drawn selection. The server re-checks the K9
      caps; confirm_n is what the human typed when they trip. */

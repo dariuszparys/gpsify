@@ -295,6 +295,9 @@ def test_recursive_walk_and_undated_vs_dated_clusters(
 
 
 def test_png_heic_raw_classification(tmp_path: Path, data_dir: Path) -> None:
+    from gpsify.exif import exiftool_available
+    if not exiftool_available():
+        pytest.skip("mixed-format metadata requires exiftool")
     folder = tmp_path / "mix"
     folder.mkdir()
     (folder / "pic.png").write_bytes(b"not-a-real-png")
@@ -434,3 +437,14 @@ def test_cli_prints_recursive_hint_to_stderr(tmp_path: Path, data_dir: Path) -> 
     assert result.exit_code == 0
     assert "total: 0" in _plain(result.stdout)
     assert "warning: no files at top level; 1 subdirectory found" in _plain(result.stderr)
+
+@pytest.mark.parametrize("extension", ["heic", "cr2", "png"])
+def test_missing_exiftool_refuses_unknown_metadata(tmp_path, monkeypatch, extension):
+    from gpsify.ingest import IngestError, run_ingest
+    import asyncio
+    folder = tmp_path / "photos"
+    folder.mkdir()
+    (folder / f"photo.{extension}").write_bytes(b"unknown metadata")
+    monkeypatch.setattr("gpsify.ingest.exiftool_available", lambda: False)
+    with pytest.raises(IngestError, match="metadata safely"):
+        asyncio.run(run_ingest(folder, data_dir=tmp_path / "data"))
