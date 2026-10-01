@@ -31,7 +31,7 @@ jobs:
       - name: Set up uv
         # Exact version, not @v10: setup-uv stopped publishing moving major
         # tags after v6, so @v10 resolves to nothing and the job dies in setup.
-        uses: astral-sh/setup-uv@v10.0.1
+        uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
