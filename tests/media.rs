@@ -122,13 +122,15 @@ fn symlink_and_photos_library_refused() {
     let link = tmp.path().join("link.jpg");
     #[cfg(unix)]
     std::os::unix::fs::symlink(&target, &link).unwrap();
-    let err = render_preview(&link, Some(MediaKind::Jpeg), &hash_file(&target).unwrap()).unwrap_err();
+    let err =
+        render_preview(&link, Some(MediaKind::Jpeg), &hash_file(&target).unwrap()).unwrap_err();
     assert_eq!(err.status, PhotoStatus::Error);
 
     let bundle = tmp.path().join("Lib.photoslibrary").join("IMG.jpg");
     std::fs::create_dir_all(bundle.parent().unwrap()).unwrap();
     std::fs::copy(&target, &bundle).unwrap();
-    let err = render_preview(&bundle, Some(MediaKind::Jpeg), &hash_file(&bundle).unwrap()).unwrap_err();
+    let err =
+        render_preview(&bundle, Some(MediaKind::Jpeg), &hash_file(&bundle).unwrap()).unwrap_err();
     assert_eq!(err.status, PhotoStatus::Error);
 }
 

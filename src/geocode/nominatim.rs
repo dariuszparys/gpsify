@@ -79,11 +79,7 @@ fn parse_float(val: Option<&Value>) -> Option<f64> {
     }
 }
 
-fn parse_one(
-    item: &serde_json::Map<String, Value>,
-    query: &str,
-    provider: &str,
-) -> Option<GeoHit> {
+fn parse_one(item: &serde_json::Map<String, Value>, query: &str, provider: &str) -> Option<GeoHit> {
     let lat = parse_float(item.get("lat"))?;
     let lng = parse_float(item.get("lon"))?;
 

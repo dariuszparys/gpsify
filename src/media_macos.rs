@@ -257,15 +257,19 @@ pub fn render_jpeg_from_bytes(
 
         let jpeg_uti = OwnedCf::from_ptr(CFStringCreateWithCString(
             kCFAllocatorDefault,
-            b"public.jpeg\0".as_ptr().cast::<c_char>(),
+            c"public.jpeg".as_ptr(),
             K_CF_STRING_ENCODING_UTF8,
         ))
         .ok_or_else(|| MediaError::new("CFStringCreateWithCString failed", PhotoStatus::Error))?;
 
         let dest_ptr =
             CGImageDestinationCreateWithData(out_data_ptr, jpeg_uti.as_ptr(), 1, ptr::null());
-        let _dest = OwnedCf::from_ptr(dest_ptr.cast())
-            .ok_or_else(|| MediaError::new("CGImageDestinationCreateWithData failed", PhotoStatus::Error))?;
+        let _dest = OwnedCf::from_ptr(dest_ptr.cast()).ok_or_else(|| {
+            MediaError::new(
+                "CGImageDestinationCreateWithData failed",
+                PhotoStatus::Error,
+            )
+        })?;
 
         let q_num = OwnedCf::from_ptr(CFNumberCreate(
             kCFAllocatorDefault,
@@ -328,7 +332,7 @@ pub fn encode_heic_from_bytes(bytes: &[u8]) -> Option<Vec<u8>> {
         let out_data = OwnedCf::from_ptr(out_data_ptr.cast())?;
         let heic_uti = OwnedCf::from_ptr(CFStringCreateWithCString(
             kCFAllocatorDefault,
-            b"public.heic\0".as_ptr().cast::<c_char>(),
+            c"public.heic".as_ptr(),
             K_CF_STRING_ENCODING_UTF8,
         ))?;
         let dest_ptr =

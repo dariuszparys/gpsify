@@ -195,16 +195,8 @@ fn convert_node(
                         }
                     }
                 }
-                if non_null_types.len() == 1 {
-                    out.insert(
-                        "type".to_string(),
-                        Value::String(non_null_types[0].to_string()),
-                    );
-                } else if !non_null_types.is_empty() {
-                    out.insert(
-                        "type".to_string(),
-                        Value::String(non_null_types[0].to_string()),
-                    );
+                if let Some(first_type) = non_null_types.first() {
+                    out.insert("type".to_string(), Value::String((*first_type).to_string()));
                 }
                 if has_null {
                     out.insert("nullable".to_string(), Value::Bool(true));

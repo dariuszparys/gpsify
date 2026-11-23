@@ -4,9 +4,13 @@ use gpsify::apply::{
     run_apply, ApplyError, ApplyOptions, DEST_DIVERGED, PNG_XMP_ONLY_WARNING, SOURCE_CHANGED,
     UNSAFE_PATH,
 };
-use gpsify::exif::{dest_gps_matches, exiftool_available, write_gps_batch_with, GpsWrite, MediaKind};
+use gpsify::exif::{
+    dest_gps_matches, exiftool_available, write_gps_batch_with, GpsWrite, MediaKind,
+};
 use gpsify::media::hash_file;
-use gpsify::store::{copies_root, options_hash, JobRepo, NewPhoto, NewProposal, UpsertWriteReceipt};
+use gpsify::store::{
+    copies_root, options_hash, JobRepo, NewPhoto, NewProposal, UpsertWriteReceipt,
+};
 use gpsify::types::{DecisionAction, PhotoStatus, PinSource, WriteReceiptStatus};
 use gpsify::undo::run_undo;
 use image::{Rgb, RgbImage};
@@ -296,7 +300,11 @@ fn png_xmp_warning_and_out_dir_and_dest_diverged() {
     .unwrap();
     assert_eq!(summary.wrote, 1);
     assert!(summary.warnings.contains(&PNG_XMP_ONLY_WARNING.to_string()));
-    assert!(dest_gps_matches(&out.join("shot.png"), PORTO_LAT, PORTO_LNG));
+    assert!(dest_gps_matches(
+        &out.join("shot.png"),
+        PORTO_LAT,
+        PORTO_LNG
+    ));
 
     // Diverged copy check
     let tmp2 = TempDir::new().unwrap();

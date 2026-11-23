@@ -151,9 +151,8 @@ impl JobIndex {
             Err(err) => return Err(StoreError::Sqlite(err)),
         }
 
-        get_on(&guard, job_id)?.ok_or_else(|| {
-            StoreError::Other(format!("failed to register job_id {job_id:?}"))
-        })
+        get_on(&guard, job_id)?
+            .ok_or_else(|| StoreError::Other(format!("failed to register job_id {job_id:?}")))
     }
 
     pub fn touch_ingest(&self, job_id: &str, now: Option<&str>) -> Result<(), StoreError> {
@@ -200,9 +199,8 @@ impl JobIndex {
             }
             Err(err) => return Err(StoreError::Sqlite(err)),
         }
-        get_on(&guard, job_id)?.ok_or_else(|| {
-            StoreError::Other(format!("failed to relocate job_id {job_id:?}"))
-        })
+        get_on(&guard, job_id)?
+            .ok_or_else(|| StoreError::Other(format!("failed to relocate job_id {job_id:?}")))
     }
 }
 

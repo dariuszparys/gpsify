@@ -17,9 +17,7 @@ use crate::exif::{
     is_photos_library_name, is_processable, read_exif_batch, ExifRead, MediaKind, XMP_EXTS,
 };
 use crate::media::hash_file;
-use crate::store::{
-    options_hash, JobIndex, JobRepo, NewPhoto, PhotoPatch, PhotoRow, StoreError,
-};
+use crate::store::{options_hash, JobIndex, JobRepo, NewPhoto, PhotoPatch, PhotoRow, StoreError};
 use crate::types::PhotoStatus;
 
 const IGNORE_NAMES: &[&str] = &[".DS_Store", "Thumbs.db"];
@@ -83,7 +81,10 @@ pub fn run_ingest(folder: &Path, opts: IngestOptions<'_>) -> Result<IngestSummar
     let root = std::fs::canonicalize(&expanded)
         .map_err(|_| IngestError(format!("folder not found: {}", folder.display())))?;
     if !root.is_dir() {
-        return Err(IngestError(format!("not a directory: {}", folder.display())));
+        return Err(IngestError(format!(
+            "not a directory: {}",
+            folder.display()
+        )));
     }
     if is_photos_library(&root) {
         return Err(IngestError(
@@ -288,8 +289,7 @@ fn iter_files(root: &Path, recursive: bool) -> Vec<PathBuf> {
             });
         for entry in iter.flatten() {
             let p = entry.path();
-            if entry.file_type().is_file() && !entry.file_type().is_symlink() && !ignored(p, root)
-            {
+            if entry.file_type().is_file() && !entry.file_type().is_symlink() && !ignored(p, root) {
                 found.push(p.to_path_buf());
             }
         }
@@ -344,7 +344,8 @@ fn ignored(path: &Path, root: &Path) -> bool {
         }
     }
     let rel = path.strip_prefix(root).unwrap_or(path);
-    rel.components().any(|c| matches!(c, Component::Normal(s) if s == ".gpsify"))
+    rel.components()
+        .any(|c| matches!(c, Component::Normal(s) if s == ".gpsify"))
 }
 
 fn posix_relpath(path: &Path, root: &Path) -> String {
@@ -435,7 +436,10 @@ fn upsert_photos(
     let mut claimed_ids = BTreeSet::new();
 
     for item in disk_files {
-        let exif = exif_by_path.get(&item.path_str).cloned().unwrap_or_default();
+        let exif = exif_by_path
+            .get(&item.path_str)
+            .cloned()
+            .unwrap_or_default();
         let existing = match by_path.get(&item.path_str).cloned() {
             Some(row) => Some(row),
             None => {

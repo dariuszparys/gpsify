@@ -79,7 +79,9 @@ fn table_names(conn: &rusqlite::Connection) -> BTreeSet<String> {
 }
 
 fn column_names(conn: &rusqlite::Connection, table: &str) -> BTreeSet<String> {
-    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})")).unwrap();
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .unwrap();
     stmt.query_map([], |r| r.get::<_, String>(1))
         .unwrap()
         .map(Result::unwrap)
@@ -110,7 +112,14 @@ fn job_schema_v1_complete() {
         assert_eq!(fk, 1);
 
         let tables = table_names(db);
-        for expected in ["job", "cluster", "photo", "proposal", "decision", "write_receipt"] {
+        for expected in [
+            "job",
+            "cluster",
+            "photo",
+            "proposal",
+            "decision",
+            "write_receipt",
+        ] {
             assert!(tables.contains(expected), "missing table {expected}");
         }
 
@@ -178,7 +187,10 @@ fn job_schema_v1_complete() {
             "written_sha256",
             "backup_path",
         ] {
-            assert!(receipt_cols.contains(col), "missing write_receipt column {col}");
+            assert!(
+                receipt_cols.contains(col),
+                "missing write_receipt column {col}"
+            );
         }
 
         let mut stmt =
@@ -240,7 +252,9 @@ fn index_register_lookup_and_resume() {
         })
         .unwrap();
 
-    let first = index.register("job-a", "/photos/trip", &digest, None).unwrap();
+    let first = index
+        .register("job-a", "/photos/trip", &digest, None)
+        .unwrap();
     let resumed = index
         .register("job-other-uuid", "/photos/trip", &digest, None)
         .unwrap();
@@ -260,9 +274,7 @@ fn index_register_lookup_and_resume() {
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].job_id, "job-a");
 
-    let relocated = index
-        .relocate("job-a", "/photos/trip-moved", None)
-        .unwrap();
+    let relocated = index.relocate("job-a", "/photos/trip-moved", None).unwrap();
     assert_eq!(relocated.root_canonical, "/photos/trip-moved");
     assert!(index.lookup("/photos/trip", &digest).unwrap().is_none());
     assert!(index_db_path(tmp.path()).is_file());
@@ -303,7 +315,14 @@ fn add_decision_contract() {
     assert_eq!(decision.current, 1);
 
     let err = repo
-        .add_decision(&pid, DecisionAction::Skip, Some(41.0), Some(-8.0), None, None)
+        .add_decision(
+            &pid,
+            DecisionAction::Skip,
+            Some(41.0),
+            Some(-8.0),
+            None,
+            None,
+        )
         .unwrap_err();
     assert!(matches!(err, StoreError::Decision(_)));
     assert!(err.to_string().contains("must not include coordinates"));
@@ -358,7 +377,14 @@ fn add_decision_contract() {
 
     // accept copies user pin
     let pid_u = pending_photo(&repo, "u");
-    add_test_proposal(&repo, &pid_u, PinSource::User, Some(1.0), Some(2.0), Some("User Pin"));
+    add_test_proposal(
+        &repo,
+        &pid_u,
+        PinSource::User,
+        Some(1.0),
+        Some(2.0),
+        Some("User Pin"),
+    );
     let u_dec = repo
         .add_decision(&pid_u, DecisionAction::Accept, None, None, None, None)
         .unwrap();
@@ -395,7 +421,14 @@ fn add_decision_contract() {
     );
 
     let cluster_id = repo
-        .add_decision(&pid, DecisionAction::ClusterApply, Some(41.14), Some(-8.61), None, None)
+        .add_decision(
+            &pid,
+            DecisionAction::ClusterApply,
+            Some(41.14),
+            Some(-8.61),
+            None,
+            None,
+        )
         .unwrap();
     let current = repo.get_current_decision(&pid).unwrap().unwrap();
     assert_eq!(current.id, cluster_id);
@@ -528,7 +561,10 @@ fn token_columns_cluster_and_stale_reset() {
         PhotoStatus::Pending.as_str()
     );
     repo.set_stats_json(r#"{"proposed":1}"#).unwrap();
-    assert_eq!(repo.get_job().unwrap().unwrap().stats_json, r#"{"proposed":1}"#);
+    assert_eq!(
+        repo.get_job().unwrap().unwrap().stats_json,
+        r#"{"proposed":1}"#
+    );
 }
 
 #[test]
@@ -539,10 +575,16 @@ fn index_schema_and_resolve_job_handle() {
     assert!(tables.contains("job_index"));
     assert_eq!(
         column_names(&db, "job_index"),
-        ["job_id", "root_canonical", "options_hash", "created_at", "last_ingest_at"]
-            .into_iter()
-            .map(str::to_string)
-            .collect()
+        [
+            "job_id",
+            "root_canonical",
+            "options_hash",
+            "created_at",
+            "last_ingest_at"
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
     );
     drop(db);
 
@@ -573,10 +615,20 @@ fn index_schema_and_resolve_job_handle() {
     let id_flat = "33333333-3333-4333-8333-333333333333";
     let id_rec = "44444444-4444-4444-8444-444444444444";
     index
-        .register(id_flat, &canon, &options_hash(false), Some("2026-08-01T00:00:00Z"))
+        .register(
+            id_flat,
+            &canon,
+            &options_hash(false),
+            Some("2026-08-01T00:00:00Z"),
+        )
         .unwrap();
     index
-        .register(id_rec, &canon, &options_hash(true), Some("2026-08-02T00:00:00Z"))
+        .register(
+            id_rec,
+            &canon,
+            &options_hash(true),
+            Some("2026-08-02T00:00:00Z"),
+        )
         .unwrap();
 
     let by_folder = resolve_job_handle(tmp.path(), album.to_str().unwrap()).unwrap();

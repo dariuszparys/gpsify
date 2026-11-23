@@ -14,9 +14,9 @@ use thiserror::Error;
 
 use crate::config::expand_user_path;
 use crate::exif::{
-    classify_media, dest_gps_matches, exiftool_available, has_unsafe_path_chars,
-    is_photos_library, render_exiftool_argfile, write_gps_batch_with, writes_blocked,
-    ExifWriteError, GpsWrite, MediaKind, HEIC_WRITE_REQUIRES_EXIFTOOL, WRITE_REQUIRES_EXIFTOOL,
+    classify_media, dest_gps_matches, exiftool_available, has_unsafe_path_chars, is_photos_library,
+    render_exiftool_argfile, write_gps_batch_with, writes_blocked, ExifWriteError, GpsWrite,
+    MediaKind, HEIC_WRITE_REQUIRES_EXIFTOOL, WRITE_REQUIRES_EXIFTOOL,
 };
 use crate::media::hash_file;
 use crate::store::{
@@ -99,7 +99,11 @@ pub fn resolve_dests(
 ) -> (PathBuf, PathBuf) {
     let source = PathBuf::from(&photo.path);
     let rel = PathBuf::from(&photo.relpath);
-    let image = if in_place { source } else { dest_root.join(rel) };
+    let image = if in_place {
+        source
+    } else {
+        dest_root.join(rel)
+    };
     match kind {
         MediaKind::Raw => (image.with_extension("xmp"), image),
         MediaKind::Jpeg | MediaKind::Png | MediaKind::Heic | MediaKind::Unsupported => {
@@ -158,11 +162,7 @@ fn validate_apply_paths(
         return Some(UNSAFE_PATH);
     }
     let rel = Path::new(&photo.relpath);
-    if rel.is_absolute()
-        || rel
-            .components()
-            .any(|c| matches!(c, Component::ParentDir))
-    {
+    if rel.is_absolute() || rel.components().any(|c| matches!(c, Component::ParentDir)) {
         return Some(UNSAFE_PATH);
     }
     let source = Path::new(&photo.path);
@@ -314,6 +314,7 @@ where
                 summary.failed += 1;
             }
             InspectOutcome::Ready(item) => {
+                let item = *item;
                 if kind == MediaKind::Png {
                     saw_png = true;
                 }
@@ -343,8 +344,8 @@ where
             decision_id: item.decision.id.clone(),
         })
         .collect();
-    summary.argfile = render_exiftool_argfile(&gps_writes)
-        .map_err(|e| ApplyError(e.to_string()))?;
+    summary.argfile =
+        render_exiftool_argfile(&gps_writes).map_err(|e| ApplyError(e.to_string()))?;
 
     if opts.dry_run {
         if let Some(ref mut cb) = progress {
@@ -420,7 +421,7 @@ where
 enum InspectOutcome {
     Skip,
     Failed,
-    Ready(QueuedWrite),
+    Ready(Box<QueuedWrite>),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -476,9 +477,14 @@ fn inspect_one(
         return Ok(InspectOutcome::Failed);
     }
 
-    if let Some(path_err) =
-        validate_apply_paths(photo, job_root_canonical, dest_root, dest, image_dest, in_place)
-    {
+    if let Some(path_err) = validate_apply_paths(
+        photo,
+        job_root_canonical,
+        dest_root,
+        dest,
+        image_dest,
+        in_place,
+    ) {
         if !dry_run {
             fail_receipt(repo, photo, decision, dest, in_place, path_err, None)?;
         }
@@ -489,7 +495,7 @@ fn inspect_one(
     let backup_existing = existing.as_ref().and_then(|r| r.backup_path.clone());
 
     if dry_run {
-        return Ok(InspectOutcome::Ready(QueuedWrite {
+        return Ok(InspectOutcome::Ready(Box::new(QueuedWrite {
             photo: photo.clone(),
             decision: decision.clone(),
             kind,
@@ -498,7 +504,7 @@ fn inspect_one(
             lng,
             in_place,
             backup_path: backup_existing,
-        }));
+        })));
     }
 
     repo.upsert_write_receipt(UpsertWriteReceipt {
@@ -515,7 +521,7 @@ fn inspect_one(
     })?;
 
     if dest.is_file() && dest_gps_matches(dest, lat, lng) {
-        return Ok(InspectOutcome::Ready(QueuedWrite {
+        return Ok(InspectOutcome::Ready(Box::new(QueuedWrite {
             photo: photo.clone(),
             decision: decision.clone(),
             kind,
@@ -524,7 +530,7 @@ fn inspect_one(
             lng,
             in_place,
             backup_path: backup_existing,
-        }));
+        })));
     }
 
     let source = Path::new(&photo.path);
@@ -545,9 +551,13 @@ fn inspect_one(
             )?;
             return Ok(InspectOutcome::Failed);
         }
-    } else if let Some(err) =
-        handle_mismatch_dest(kind, dest, ingest_hash, in_place, backup_existing.as_deref())?
-    {
+    } else if let Some(err) = handle_mismatch_dest(
+        kind,
+        dest,
+        ingest_hash,
+        in_place,
+        backup_existing.as_deref(),
+    )? {
         fail_receipt(
             repo,
             photo,
@@ -581,7 +591,7 @@ fn inspect_one(
         receipt_id: None,
     })?;
 
-    Ok(InspectOutcome::Ready(QueuedWrite {
+    Ok(InspectOutcome::Ready(Box::new(QueuedWrite {
         photo: photo.clone(),
         decision: decision.clone(),
         kind,
@@ -590,7 +600,7 @@ fn inspect_one(
         lng,
         in_place,
         backup_path: backup,
-    }))
+    })))
 }
 
 fn handle_missing_dest(

@@ -122,9 +122,7 @@ pub fn job_status(data_dir: &Path, job_id: &str) -> Result<StatusRollup, StatusE
         root_canonical: job.root_canonical,
         hint: job.hint,
         created_at: job.created_at,
-        dest_root: copies_root(data_dir, job_id)
-            .to_string_lossy()
-            .into_owned(),
+        dest_root: copies_root(data_dir, job_id).to_string_lossy().into_owned(),
         counts: counts_with_zeros(&live),
         stats: parse_stats(&job.stats_json),
         warnings,

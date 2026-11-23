@@ -25,12 +25,13 @@ fn write_test_jpeg(path: &Path) {
 }
 
 fn test_settings(data_dir: &Path) -> Settings {
-    let mut s = Settings::default();
-    s.data_dir = data_dir.to_path_buf();
-    s.nominatim_contact = Some("test@example.com".to_string());
-    s.xai_api_key = Some("xai-test-key".to_string());
-    s.gemini_api_key = Some("gemini-test-key".to_string());
-    s
+    Settings {
+        data_dir: data_dir.to_path_buf(),
+        nominatim_contact: Some("test@example.com".to_string()),
+        xai_api_key: Some("xai-test-key".to_string()),
+        gemini_api_key: Some("gemini-test-key".to_string()),
+        ..Default::default()
+    }
 }
 
 fn clerigos_hit() -> GeoHit {

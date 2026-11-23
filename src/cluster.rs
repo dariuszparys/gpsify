@@ -15,7 +15,11 @@ use chrono::{Duration, NaiveDateTime};
 
 pub const CLUSTER_GAP_SECS: i64 = 45 * 60;
 
-const DT_FORMATS: &[&str] = &["%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"];
+const DT_FORMATS: &[&str] = &[
+    "%Y:%m:%d %H:%M:%S",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClusterMember {
@@ -125,8 +129,8 @@ pub fn blake2s_256(input: &[u8]) -> [u8; 32] {
 
     fn compress(h: &mut [u32; 8], block: &[u8; 64], t: u64, last: bool) {
         let mut m = [0u32; 16];
-        for (i, chunk) in block.chunks_exact(4).enumerate() {
-            m[i] = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        for (i, chunk) in block.as_chunks::<4>().0.iter().enumerate() {
+            m[i] = u32::from_le_bytes(*chunk);
         }
         let mut v = [0u32; 16];
         v[..8].copy_from_slice(h);
@@ -186,7 +190,10 @@ pub fn cluster_id_for(parent: &str, first_path: &str, first_ts: Option<&str>) ->
 pub fn plan_clusters(members: &[ClusterMember]) -> Vec<ClusterPlan> {
     let mut by_parent: BTreeMap<String, Vec<ClusterMember>> = BTreeMap::new();
     for m in members {
-        by_parent.entry(parent_of(&m.relpath)).or_default().push(m.clone());
+        by_parent
+            .entry(parent_of(&m.relpath))
+            .or_default()
+            .push(m.clone());
     }
 
     let mut plans = Vec::new();

@@ -11,7 +11,9 @@ const JOB_B: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 fn create_job(data_dir: &std::path::Path, job_id: &str, root: &str) -> JobRepo {
     let index = JobIndex::open(data_dir).unwrap();
-    index.register(job_id, root, &options_hash(false), None).unwrap();
+    index
+        .register(job_id, root, &options_hash(false), None)
+        .unwrap();
     JobRepo::create(
         data_dir,
         job_id,
@@ -81,7 +83,10 @@ fn status_rollup_reads_stats_and_live_counts() {
 #[test]
 fn list_jobs_and_empty_index() {
     let tmp = TempDir::new().unwrap();
-    assert_eq!(format_job_list(&list_job_entries(tmp.path()).unwrap()), "no jobs");
+    assert_eq!(
+        format_job_list(&list_job_entries(tmp.path()).unwrap()),
+        "no jobs"
+    );
 
     seed_job(tmp.path());
     create_job(tmp.path(), JOB_B, "/photos/other");

@@ -148,7 +148,13 @@ async fn wait_for_selected(page: &chromiumoxide::Page, expected: usize) {
 async fn shift_click_last_tile(page: &chromiumoxide::Page) {
     let tiles = page.find_elements(".tile").await.unwrap();
     let last = tiles.last().unwrap();
-    let pt = last.scroll_into_view().await.unwrap().clickable_point().await.unwrap();
+    let pt = last
+        .scroll_into_view()
+        .await
+        .unwrap()
+        .clickable_point()
+        .await
+        .unwrap();
     let pressed = DispatchMouseEventParams::builder()
         .r#type(DispatchMouseEventType::MousePressed)
         .x(pt.x)
@@ -219,11 +225,21 @@ async fn headless_chrome_review_workflows() {
         let page = browser.new_page(&url).await.unwrap();
         wait_for_tiles(&page, 3).await;
 
-        page.find_element(".tile").await.unwrap().click().await.unwrap();
+        page.find_element(".tile")
+            .await
+            .unwrap()
+            .click()
+            .await
+            .unwrap();
         shift_click_last_tile(&page).await;
         wait_for_selected(&page, 3).await;
 
-        page.find_element("#btn-accept").await.unwrap().click().await.unwrap();
+        page.find_element("#btn-accept")
+            .await
+            .unwrap()
+            .click()
+            .await
+            .unwrap();
         wait_for_tiles(&page, 0).await;
 
         page.find_element(r#"[data-filter="accepted"]"#)
@@ -255,8 +271,18 @@ async fn headless_chrome_review_workflows() {
         let page = browser.new_page(&url).await.unwrap();
         wait_for_tiles(&page, 3).await;
 
-        page.find_element(".tile").await.unwrap().click().await.unwrap();
-        page.find_element("#btn-edit").await.unwrap().click().await.unwrap();
+        page.find_element(".tile")
+            .await
+            .unwrap()
+            .click()
+            .await
+            .unwrap();
+        page.find_element("#btn-edit")
+            .await
+            .unwrap()
+            .click()
+            .await
+            .unwrap();
 
         let map_pt: Value = page
             .evaluate_function(
@@ -273,7 +299,12 @@ async fn headless_chrome_review_workflows() {
         .await
         .unwrap();
 
-        page.find_element("#btn-edit").await.unwrap().click().await.unwrap();
+        page.find_element("#btn-edit")
+            .await
+            .unwrap()
+            .click()
+            .await
+            .unwrap();
         wait_for_tiles(&page, 2).await;
 
         let records = accepted_records(&page).await;
@@ -294,7 +325,12 @@ async fn headless_chrome_review_workflows() {
         let page = browser.new_page(&url).await.unwrap();
         wait_for_tiles(&page, 3).await;
 
-        page.find_element(".tile").await.unwrap().click().await.unwrap();
+        page.find_element(".tile")
+            .await
+            .unwrap()
+            .click()
+            .await
+            .unwrap();
         shift_click_last_tile(&page).await;
         page.find_element("#btn-apply-pin")
             .await
@@ -304,8 +340,19 @@ async fn headless_chrome_review_workflows() {
             .unwrap();
 
         let confirm_input = page.find_element("#apply-confirm").await.unwrap();
-        confirm_input.click().await.unwrap().type_str("1").await.unwrap();
-        page.find_element("#apply-ok").await.unwrap().click().await.unwrap();
+        confirm_input
+            .click()
+            .await
+            .unwrap()
+            .type_str("1")
+            .await
+            .unwrap();
+        page.find_element("#apply-ok")
+            .await
+            .unwrap()
+            .click()
+            .await
+            .unwrap();
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
@@ -320,7 +367,10 @@ async fn headless_chrome_review_workflows() {
             if txt.contains("requires confirm_n") {
                 break;
             }
-            assert!(tokio::time::Instant::now() < deadline, "got status: {txt:?}");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "got status: {txt:?}"
+            );
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         assert_eq!(accepted_records(&page).await.len(), 1);
@@ -332,7 +382,12 @@ async fn headless_chrome_review_workflows() {
             .await
             .unwrap();
         wait_for_tiles(&page, 3).await;
-        page.find_element(".tile").await.unwrap().click().await.unwrap();
+        page.find_element(".tile")
+            .await
+            .unwrap()
+            .click()
+            .await
+            .unwrap();
         shift_click_last_tile(&page).await;
         page.find_element("#btn-apply-pin")
             .await
@@ -345,8 +400,19 @@ async fn headless_chrome_review_workflows() {
             .await
             .unwrap();
         let confirm_input = page.find_element("#apply-confirm").await.unwrap();
-        confirm_input.click().await.unwrap().type_str("2").await.unwrap();
-        page.find_element("#apply-ok").await.unwrap().click().await.unwrap();
+        confirm_input
+            .click()
+            .await
+            .unwrap()
+            .type_str("2")
+            .await
+            .unwrap();
+        page.find_element("#apply-ok")
+            .await
+            .unwrap()
+            .click()
+            .await
+            .unwrap();
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
@@ -361,7 +427,10 @@ async fn headless_chrome_review_workflows() {
             if txt.contains("Pin applied to 2 photos") {
                 break;
             }
-            assert!(tokio::time::Instant::now() < deadline, "got status: {txt:?}");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "got status: {txt:?}"
+            );
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
 

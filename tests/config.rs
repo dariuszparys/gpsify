@@ -96,7 +96,10 @@ fn env_overrides_via_real_process_env() {
     assert_eq!(settings.model, "grok-env");
     assert_eq!(settings.reasoning_effort, "medium");
     assert_eq!(settings.timeout_s, 180.0);
-    assert_eq!(settings.nominatim_contact.as_deref(), Some("dev@example.com"));
+    assert_eq!(
+        settings.nominatim_contact.as_deref(),
+        Some("dev@example.com")
+    );
     assert_eq!(settings.geocoder_url, "http://127.0.0.1:8080/search");
 }
 
@@ -182,9 +185,8 @@ fn rejects_xhigh_reasoning_from_override_and_env() {
 
     let mut env = BTreeMap::new();
     env.insert("GPSIFY_REASONING".to_string(), "xhigh".to_string());
-    let env_err =
-        load_settings_from_sources(SettingsOverrides::default(), &env, &BTreeMap::new())
-            .unwrap_err();
+    let env_err = load_settings_from_sources(SettingsOverrides::default(), &env, &BTreeMap::new())
+        .unwrap_err();
     assert!(env_err.to_string().contains("xhigh"));
 }
 
@@ -261,5 +263,8 @@ fn data_dir_expands_user() {
         &BTreeMap::new(),
     )
     .unwrap();
-    assert_eq!(settings.data_dir, dirs::home_dir().unwrap().join("gpsify-data"));
+    assert_eq!(
+        settings.data_dir,
+        dirs::home_dir().unwrap().join("gpsify-data")
+    );
 }

@@ -69,10 +69,19 @@ fn ingest_classifies_gps_plain_and_ignores_sidecars() {
         .into_iter()
         .map(|p| (p.relpath.clone(), p))
         .collect();
-    assert_eq!(by_rel["tagged.jpg"].status, PhotoStatus::SkippedHasGps.as_str());
+    assert_eq!(
+        by_rel["tagged.jpg"].status,
+        PhotoStatus::SkippedHasGps.as_str()
+    );
     assert_eq!(by_rel["plain.jpg"].status, PhotoStatus::Pending.as_str());
-    assert_eq!(by_rel["clip.mov"].status, PhotoStatus::SkippedUnsupported.as_str());
-    assert_eq!(by_rel["notes.txt"].status, PhotoStatus::SkippedUnsupported.as_str());
+    assert_eq!(
+        by_rel["clip.mov"].status,
+        PhotoStatus::SkippedUnsupported.as_str()
+    );
+    assert_eq!(
+        by_rel["notes.txt"].status,
+        PhotoStatus::SkippedUnsupported.as_str()
+    );
     assert!(!by_rel.contains_key("._AppleDouble.jpg"));
     assert!(!by_rel.contains_key(".DS_Store"));
     assert!(!by_rel.contains_key("plain.xmp"));

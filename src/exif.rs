@@ -50,7 +50,9 @@ pub const EXIFTOOL_READ_ARGS: &[&str] = &[
 pub const JPEG_EXTS: &[&str] = &[".jpg", ".jpeg"];
 pub const PNG_EXTS: &[&str] = &[".png"];
 pub const HEIC_EXTS: &[&str] = &[".heic", ".heif"];
-pub const RAW_EXTS: &[&str] = &[".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".orf", ".rw2"];
+pub const RAW_EXTS: &[&str] = &[
+    ".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".orf", ".rw2",
+];
 pub const XMP_EXTS: &[&str] = &[".xmp"];
 
 pub const MISSING_EXIFTOOL_WARNING: &str =
@@ -363,18 +365,18 @@ fn read_with_exiftool(paths: &[PathBuf], warnings: &mut Vec<String>) -> BTreeMap
         for path in chunk {
             cmd.arg(path);
         }
-        let completed = match run_command_with_timeout(&mut cmd, Duration::from_secs(EXIFTOOL_TIMEOUT_S))
-        {
-            Ok(out) => out,
-            Err(exc) => {
-                warnings.push(format!(
-                    "exiftool failed ({exc}); falling back for {} file(s)",
-                    chunk.len()
-                ));
-                result.extend(read_fallback(chunk));
-                continue;
-            }
-        };
+        let completed =
+            match run_command_with_timeout(&mut cmd, Duration::from_secs(EXIFTOOL_TIMEOUT_S)) {
+                Ok(out) => out,
+                Err(exc) => {
+                    warnings.push(format!(
+                        "exiftool failed ({exc}); falling back for {} file(s)",
+                        chunk.len()
+                    ));
+                    result.extend(read_fallback(chunk));
+                    continue;
+                }
+            };
         let code = completed.status.code().unwrap_or(-1);
         let stdout_str = String::from_utf8_lossy(&completed.stdout);
         if (code != 0 && code != 1) || stdout_str.trim().is_empty() {
@@ -803,7 +805,11 @@ fn argfile_lines(item: &GpsWrite) -> Result<Vec<String>, ExifWriteError> {
     let lng_s = fmt_coord(item.lng);
     let instructions = gps_instructions(&item.job_id, &item.decision_id);
 
-    let mut lines = vec!["-charset".to_string(), "filename=utf8".to_string(), "-n".to_string()];
+    let mut lines = vec![
+        "-charset".to_string(),
+        "filename=utf8".to_string(),
+        "-n".to_string(),
+    ];
     match item.kind {
         MediaKind::Jpeg | MediaKind::Heic => {
             lines.extend([
@@ -912,7 +918,9 @@ fn seed_missing_xmp_sidecar(item: &GpsWrite) -> Result<(), ExifWriteError> {
     Ok(())
 }
 
-pub fn write_gps_batch(items: &[GpsWrite]) -> Result<BTreeMap<String, Option<String>>, ExifWriteError> {
+pub fn write_gps_batch(
+    items: &[GpsWrite],
+) -> Result<BTreeMap<String, Option<String>>, ExifWriteError> {
     write_gps_batch_with(items, !writes_blocked(), exiftool_available())
 }
 
@@ -946,12 +954,15 @@ pub fn write_gps_batch_with(
 
     let mut cmd = Command::new("exiftool");
     cmd.arg("-@").arg(&args_path);
-    let completed = run_command_with_timeout(&mut cmd, Duration::from_secs(EXIFTOOL_WRITE_TIMEOUT_S))
-        .map_err(|e| ExifWriteError(format!("exiftool write failed: {e}")))?;
+    let completed =
+        run_command_with_timeout(&mut cmd, Duration::from_secs(EXIFTOOL_WRITE_TIMEOUT_S))
+            .map_err(|e| ExifWriteError(format!("exiftool write failed: {e}")))?;
 
     let code = completed.status.code().unwrap_or(-1);
     if code != 0 && code != 1 {
-        let stderr = String::from_utf8_lossy(&completed.stderr).trim().to_string();
+        let stderr = String::from_utf8_lossy(&completed.stderr)
+            .trim()
+            .to_string();
         return Err(ExifWriteError(format!(
             "exiftool write exit {code}: {stderr}"
         )));

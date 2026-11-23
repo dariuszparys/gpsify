@@ -95,7 +95,10 @@ pub fn create_router(state: ReviewState) -> Router {
         .route("/api/photos", get(routes::api_photos))
         .route("/api/decisions", post(routes::api_decisions))
         .route("/api/photos/{photo_id}", get(routes::api_photo_detail))
-        .route("/api/photos/{photo_id}/decision", post(routes::api_decision))
+        .route(
+            "/api/photos/{photo_id}/decision",
+            post(routes::api_decision),
+        )
         .route("/api/thumb/{photo_id}", get(routes::api_thumb))
         .route("/api/preview/{photo_id}", get(routes::api_preview))
         .route("/api/clusters/{cluster_id}", get(routes::api_cluster))

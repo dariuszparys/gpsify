@@ -4,10 +4,10 @@ use std::time::Duration;
 
 use gpsify::config::{load_settings_from_sources, SettingsOverrides, DEFAULT_GEOCODER_URL};
 use gpsify::geocode::{
-    cache_key, looks_like_house_address, nominatim_user_agent, normalize_place, parse_nominatim_hits,
-    pick_best_hit, require_geocoder_ready, AsyncRateLimiter, FakeGeocoder, GeocodeCache,
-    GeocodeConfigError, GeocodeService, Geocoder, NominatimGeocoder, DEFAULT_UNCACHED_MAX,
-    OSM_ATTRIBUTION,
+    cache_key, looks_like_house_address, nominatim_user_agent, normalize_place,
+    parse_nominatim_hits, pick_best_hit, require_geocoder_ready, AsyncRateLimiter, FakeGeocoder,
+    GeocodeCache, GeocodeConfigError, GeocodeService, Geocoder, NominatimGeocoder,
+    DEFAULT_UNCACHED_MAX, OSM_ATTRIBUTION,
 };
 use gpsify::types::{GeoHit, Granularity};
 use serde_json::json;
@@ -55,7 +55,9 @@ fn normalize_and_cache_key_rules() {
 fn house_address_heuristic() {
     assert!(looks_like_house_address("12 Oak Street, Portland"));
     assert!(looks_like_house_address("1600 Pennsylvania Avenue"));
-    assert!(!looks_like_house_address("Clérigos Church, Porto, Portugal"));
+    assert!(!looks_like_house_address(
+        "Clérigos Church, Porto, Portugal"
+    ));
     assert!(!looks_like_house_address("Times Square, New York"));
 }
 
@@ -146,7 +148,10 @@ async fn nominatim_mock_server_parses_json_and_sets_ua() {
         .and(query_param("q", "Clérigos Church, Porto"))
         .and(query_param("format", "jsonv2"))
         .and(query_param("countrycodes", "pt"))
-        .and(header("user-agent", "gpsify/0.1 (personal; dev@example.com)"))
+        .and(header(
+            "user-agent",
+            "gpsify/0.1 (personal; dev@example.com)",
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([
             {
                 "lat": "41.1456",
@@ -194,7 +199,10 @@ async fn cache_hit_cap_and_pick_best_hit() {
             hit("Porto", "Porto City, Portugal", "relation"),
         ],
     );
-    fake.add("Lisbon", vec![hit("Lisbon", "Lisbon, Portugal", "relation")]);
+    fake.add(
+        "Lisbon",
+        vec![hit("Lisbon", "Lisbon, Portugal", "relation")],
+    );
 
     let service = GeocodeService::new(Arc::new(fake.clone()), cache, "en", 1, true);
 

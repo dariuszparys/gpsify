@@ -15,7 +15,9 @@ use crate::config::Settings;
 use crate::types::{GeoHit, Granularity};
 
 pub use cache::{cache_key, geocode_cache_path, normalize_place, CacheLookup, GeocodeCache};
-pub use nominatim::{nominatim_user_agent, parse_nominatim_hits, AsyncRateLimiter, NominatimGeocoder};
+pub use nominatim::{
+    nominatim_user_agent, parse_nominatim_hits, AsyncRateLimiter, NominatimGeocoder,
+};
 
 pub const DEFAULT_UNCACHED_MAX: usize = 50;
 pub const OSM_ATTRIBUTION: &str = "© OpenStreetMap contributors";
@@ -365,11 +367,7 @@ impl GeocodeService {
             guard.uncached_lookups += 1;
         }
 
-        let hits = match self
-            .geocoder
-            .search(place, country_code, &self.lang)
-            .await
-        {
+        let hits = match self.geocoder.search(place, country_code, &self.lang).await {
             Ok(h) => h,
             Err(_) => {
                 return LookupResult {

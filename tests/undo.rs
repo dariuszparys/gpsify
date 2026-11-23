@@ -1,7 +1,9 @@
 use gpsify::apply::{run_apply, ApplyOptions};
 use gpsify::exif::exiftool_available;
 use gpsify::media::hash_file;
-use gpsify::store::{copies_root, options_hash, JobRepo, NewPhoto, NewProposal, PhotoRow, WriteReceiptRow};
+use gpsify::store::{
+    copies_root, options_hash, JobRepo, NewPhoto, NewProposal, PhotoRow, WriteReceiptRow,
+};
 use gpsify::types::{DecisionAction, PhotoStatus, PinSource, WriteReceiptStatus};
 use gpsify::undo::{run_undo, undo_dest};
 use image::{Rgb, RgbImage};

@@ -9,9 +9,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::types::{
-    GeocoderName, ReasoningEffort, VisionProviderName, MIN_VISION_TIMEOUT_S,
-};
+use crate::types::{GeocoderName, ReasoningEffort, VisionProviderName, MIN_VISION_TIMEOUT_S};
 
 pub const DEFAULT_MODEL: &str = "grok-4.6";
 pub const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
@@ -170,8 +168,7 @@ impl Default for Settings {
 
 impl Settings {
     pub fn provider_name(&self) -> Result<VisionProviderName, ConfigError> {
-        VisionProviderName::from_str(&self.vision_provider)
-            .map_err(|e| ConfigError(e.0))
+        VisionProviderName::from_str(&self.vision_provider).map_err(|e| ConfigError(e.0))
     }
 
     pub fn geocoder_name(&self) -> Result<GeocoderName, ConfigError> {
@@ -209,8 +206,8 @@ impl Settings {
 
         self.data_dir = expand_user_path(&self.data_dir);
         self.vision_provider = self.vision_provider.trim().to_ascii_lowercase();
-        let _ = VisionProviderName::from_str(&self.vision_provider)
-            .map_err(|e| ConfigError(e.0))?;
+        let _ =
+            VisionProviderName::from_str(&self.vision_provider).map_err(|e| ConfigError(e.0))?;
         self.geocoder = self.geocoder.trim().to_ascii_lowercase();
         self.geocode_lang = self.geocode_lang.trim().to_ascii_lowercase();
         self.model = self.model.trim().to_string();
@@ -253,7 +250,10 @@ fn lookup_alias(
     None
 }
 
-fn toml_string(map: &toml::map::Map<String, toml::Value>, key: &str) -> Result<Option<String>, ConfigError> {
+fn toml_string(
+    map: &toml::map::Map<String, toml::Value>,
+    key: &str,
+) -> Result<Option<String>, ConfigError> {
     match map.get(key) {
         None => Ok(None),
         Some(toml::Value::String(s)) => Ok(Some(s.clone())),
@@ -264,7 +264,10 @@ fn toml_string(map: &toml::map::Map<String, toml::Value>, key: &str) -> Result<O
     }
 }
 
-fn toml_float(map: &toml::map::Map<String, toml::Value>, key: &str) -> Result<Option<f64>, ConfigError> {
+fn toml_float(
+    map: &toml::map::Map<String, toml::Value>,
+    key: &str,
+) -> Result<Option<f64>, ConfigError> {
     match map.get(key) {
         None => Ok(None),
         Some(toml::Value::Float(f)) => Ok(Some(*f)),
@@ -281,9 +284,7 @@ pub fn load_settings() -> Result<Settings, ConfigError> {
 }
 
 pub fn load_settings_with(options: LoadOptions) -> Result<Settings, ConfigError> {
-    let env: BTreeMap<String, String> = std::env::vars()
-        .filter(|(_, v)| !v.is_empty())
-        .collect();
+    let env: BTreeMap<String, String> = std::env::vars().filter(|(_, v)| !v.is_empty()).collect();
     let dotenv = if options.load_dotenv {
         read_dotenv_map(Path::new(".env"))
     } else {
@@ -300,9 +301,7 @@ pub fn load_settings_from_sources(
     let data_dir_for_toml = overrides
         .data_dir
         .clone()
-        .or_else(|| {
-            lookup_alias("GPSIFY_DATA_DIR", "data_dir", env, dotenv).map(PathBuf::from)
-        })
+        .or_else(|| lookup_alias("GPSIFY_DATA_DIR", "data_dir", env, dotenv).map(PathBuf::from))
         .map(|p| expand_user_path(&p))
         .unwrap_or_else(home_gpsify_dir);
 
@@ -333,15 +332,13 @@ pub fn load_settings_from_sources(
         Ok(default.to_string())
     };
 
-    let pick_opt_str = |primary: &str,
-                        fallback: &str,
-                        toml_key: &str|
-     -> Result<Option<String>, ConfigError> {
-        if let Some(v) = lookup_alias(primary, fallback, env, dotenv) {
-            return Ok(Some(v));
-        }
-        toml_string(&toml_map, toml_key)
-    };
+    let pick_opt_str =
+        |primary: &str, fallback: &str, toml_key: &str| -> Result<Option<String>, ConfigError> {
+            if let Some(v) = lookup_alias(primary, fallback, env, dotenv) {
+                return Ok(Some(v));
+            }
+            toml_string(&toml_map, toml_key)
+        };
 
     settings.xai_api_key = match overrides.xai_api_key {
         Some(v) => v,
@@ -401,7 +398,12 @@ pub fn load_settings_from_sources(
     };
     settings.geocoder_url = match overrides.geocoder_url {
         Some(v) => v,
-        None => pick_str("GEOCODER_URL", "geocoder_url", "geocoder_url", DEFAULT_GEOCODER_URL)?,
+        None => pick_str(
+            "GEOCODER_URL",
+            "geocoder_url",
+            "geocoder_url",
+            DEFAULT_GEOCODER_URL,
+        )?,
     };
     settings.geocoder = match overrides.geocoder {
         Some(v) => v,
@@ -409,11 +411,21 @@ pub fn load_settings_from_sources(
     };
     settings.map_tile_url = match overrides.map_tile_url {
         Some(v) => v,
-        None => pick_str("MAP_TILE_URL", "map_tile_url", "map_tile_url", DEFAULT_MAP_TILE_URL)?,
+        None => pick_str(
+            "MAP_TILE_URL",
+            "map_tile_url",
+            "map_tile_url",
+            DEFAULT_MAP_TILE_URL,
+        )?,
     };
     settings.geocode_lang = match overrides.geocode_lang {
         Some(v) => v,
-        None => pick_str("GEOCODE_LANG", "geocode_lang", "geocode_lang", DEFAULT_GEOCODE_LANG)?,
+        None => pick_str(
+            "GEOCODE_LANG",
+            "geocode_lang",
+            "geocode_lang",
+            DEFAULT_GEOCODE_LANG,
+        )?,
     };
     settings.data_dir = match overrides.data_dir {
         Some(v) => v,

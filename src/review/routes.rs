@@ -106,9 +106,13 @@ fn api_error(status: StatusCode, msg: impl Into<String>) -> Response {
     (status, Json(json!({ "error": msg.into() }))).into_response()
 }
 
-fn parse_json_body<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Response> {
-    serde_json::from_slice::<T>(bytes)
-        .map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("invalid body: {e}")))
+fn parse_json_body<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Box<Response>> {
+    serde_json::from_slice::<T>(bytes).map_err(|e| {
+        Box::new(api_error(
+            StatusCode::BAD_REQUEST,
+            format!("invalid body: {e}"),
+        ))
+    })
 }
 
 fn parse_guess(raw_json: &str) -> Option<VisionGuess> {
@@ -123,10 +127,7 @@ pub fn serialize_proposal(row: Option<&ProposalRow>) -> Value {
         return Value::Null;
     };
     let guess = parse_guess(&row.raw_json);
-    let clues = guess
-        .as_ref()
-        .map(|g| g.clues.clone())
-        .unwrap_or_default();
+    let clues = guess.as_ref().map(|g| g.clues.clone()).unwrap_or_default();
     let candidates = guess
         .as_ref()
         .map(|g| g.candidates.clone())
@@ -201,7 +202,7 @@ fn photo_matches(photo: &PhotoRow, proposal: Option<&ProposalRow>, filt: PhotoFi
     }
 }
 
-pub fn cluster_apply_candidates<'a>(members: &'a [PhotoRow]) -> Vec<&'a PhotoRow> {
+pub fn cluster_apply_candidates(members: &[PhotoRow]) -> Vec<&PhotoRow> {
     members
         .iter()
         .filter(|row| row.status == PhotoStatus::Proposed.as_str())
@@ -417,7 +418,8 @@ async fn serve_derived(state: ReviewState, photo_id: String, preview: bool) -> R
         } else {
             ensure_thumb(&job_root, &photo.id, &source, &photo.sha256, Some(kind))?
         };
-        std::fs::read(&dest).map_err(|e| crate::media::MediaError::new(e.to_string(), PhotoStatus::Error))
+        std::fs::read(&dest)
+            .map_err(|e| crate::media::MediaError::new(e.to_string(), PhotoStatus::Error))
     })
     .await;
 
@@ -507,7 +509,7 @@ pub async fn api_decision(
 ) -> Response {
     let body: DecisionBody = match parse_json_body(&body_bytes) {
         Ok(b) => b,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     if body.action == DecisionAction::ClusterApply {
         return api_error(
@@ -561,10 +563,13 @@ fn dedup_preserve(ids: &[String]) -> Vec<String> {
 pub async fn api_decisions(State(state): State<ReviewState>, body_bytes: Bytes) -> Response {
     let body: BatchDecisionBody = match parse_json_body(&body_bytes) {
         Ok(b) => b,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     if body.photo_ids.is_empty() {
-        return api_error(StatusCode::BAD_REQUEST, "invalid body: photo_ids must not be empty");
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid body: photo_ids must not be empty",
+        );
     }
     if !matches!(body.action, DecisionAction::Accept | DecisionAction::Skip) {
         return api_error(
@@ -701,10 +706,13 @@ pub async fn api_cluster_apply(
 ) -> Response {
     let body: ClusterApplyBody = match parse_json_body(&body_bytes) {
         Ok(b) => b,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     if body.photo_ids.is_empty() {
-        return api_error(StatusCode::BAD_REQUEST, "invalid body: photo_ids must not be empty");
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid body: photo_ids must not be empty",
+        );
     }
 
     let _lock = state.mutation_lock.lock().await;
@@ -741,10 +749,13 @@ pub async fn api_cluster_apply(
 pub async fn api_pin_apply(State(state): State<ReviewState>, body_bytes: Bytes) -> Response {
     let body: ClusterApplyBody = match parse_json_body(&body_bytes) {
         Ok(b) => b,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     if body.photo_ids.is_empty() {
-        return api_error(StatusCode::BAD_REQUEST, "invalid body: photo_ids must not be empty");
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid body: photo_ids must not be empty",
+        );
     }
 
     let _lock = state.mutation_lock.lock().await;
@@ -786,7 +797,7 @@ pub async fn api_pin_apply(State(state): State<ReviewState>, body_bytes: Bytes) 
 pub async fn api_geocode(State(state): State<ReviewState>, body_bytes: Bytes) -> Response {
     let body: GeocodeBody = match parse_json_body(&body_bytes) {
         Ok(b) => b,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let query = body.q.trim().to_string();
     if query.chars().count() < GEOCODE_MIN_Q_LEN {

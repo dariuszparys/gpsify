@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use rusqlite::{params, types::Value as SqlValue, Connection, OptionalExtension, Row, TransactionBehavior};
+use rusqlite::{
+    params, types::Value as SqlValue, Connection, OptionalExtension, Row, TransactionBehavior,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -147,7 +149,11 @@ pub struct NewPhoto {
 }
 
 impl NewPhoto {
-    pub fn pending(path: impl Into<String>, relpath: impl Into<String>, sha256: impl Into<String>) -> Self {
+    pub fn pending(
+        path: impl Into<String>,
+        relpath: impl Into<String>,
+        sha256: impl Into<String>,
+    ) -> Self {
         Self {
             photo_id: None,
             path: path.into(),
@@ -798,10 +804,7 @@ impl JobRepo {
             "UPDATE photo SET cluster_id = NULL WHERE job_id = ?",
             params![self.job_id],
         )?;
-        guard.execute(
-            "DELETE FROM cluster WHERE job_id = ?",
-            params![self.job_id],
-        )?;
+        guard.execute("DELETE FROM cluster WHERE job_id = ?", params![self.job_id])?;
         Ok(())
     }
 
@@ -1283,8 +1286,6 @@ fn resolve_accept_on(
             "accept rejected: proposal pin is missing or non-finite".to_string(),
         ));
     }
-    let copied_place = place_name
-        .map(str::to_string)
-        .or(current.place_name);
+    let copied_place = place_name.map(str::to_string).or(current.place_name);
     Ok((pin_lat, pin_lng, copied_place, Some(current.id)))
 }

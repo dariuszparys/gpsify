@@ -160,10 +160,7 @@ where
 fn match_photo(photos: &BTreeMap<String, PhotoRow>, needle: &Path) -> Option<String> {
     let expanded = expand_user_path(needle).to_string_lossy().into_owned();
     let needle_str = needle.to_string_lossy();
-    let name = needle
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    let name = needle.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
     for row in photos.values() {
         if row.path == expanded || row.relpath == expanded {

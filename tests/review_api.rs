@@ -185,15 +185,28 @@ fn make_app(
     (create_router(state), token, fake)
 }
 
-async fn send_req(app: &axum::Router, req: Request<Body>) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+async fn send_req(
+    app: &axum::Router,
+    req: Request<Body>,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
     let resp = app.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let headers = resp.headers().clone();
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes().to_vec();
+    let bytes = resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec();
     (status, headers, bytes)
 }
 
-async fn get_authed(app: &axum::Router, token: &str, uri: &str) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+async fn get_authed(
+    app: &axum::Router,
+    token: &str,
+    uri: &str,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
     let req = Request::builder()
         .method("GET")
         .uri(uri)
@@ -204,7 +217,12 @@ async fn get_authed(app: &axum::Router, token: &str, uri: &str) -> (StatusCode, 
     send_req(app, req).await
 }
 
-async fn post_authed(app: &axum::Router, token: &str, uri: &str, body: Value) -> (StatusCode, Value) {
+async fn post_authed(
+    app: &axum::Router,
+    token: &str,
+    uri: &str,
+    body: Value,
+) -> (StatusCode, Value) {
     let req = Request::builder()
         .method("POST")
         .uri(uri)
@@ -238,7 +256,10 @@ fn static_search_is_enter_only() {
         let src = std::fs::read_to_string(path).unwrap();
         assert!(!src.contains(r#"addEventListener("input""#), "{path:?}");
         assert!(!src.contains(".oninput"), "{path:?}");
-        assert!(!src.to_ascii_lowercase().contains("autocomplete"), "{path:?}");
+        assert!(
+            !src.to_ascii_lowercase().contains("autocomplete"),
+            "{path:?}"
+        );
     }
 
     let app_js = std::fs::read_to_string(static_dir.join("app.js")).unwrap();
@@ -285,7 +306,14 @@ async fn review_api_job_filters_and_low_rank_list() {
         Some("2019:06:14 18:04:00"),
         None,
     );
-    add_proposal(&repo, &proposed, 0.83, PinSource::Geocoder, Some(PORTO_LAT), Some(PORTO_LNG));
+    add_proposal(
+        &repo,
+        &proposed,
+        0.83,
+        PinSource::Geocoder,
+        Some(PORTO_LAT),
+        Some(PORTO_LNG),
+    );
 
     let low = add_photo(
         &repo,
@@ -295,7 +323,14 @@ async fn review_api_job_filters_and_low_rank_list() {
         Some("2019:06:14 18:04:00"),
         None,
     );
-    add_proposal(&repo, &low, 0.40, PinSource::Geocoder, Some(PORTO_LAT), Some(PORTO_LNG));
+    add_proposal(
+        &repo,
+        &low,
+        0.40,
+        PinSource::Geocoder,
+        Some(PORTO_LAT),
+        Some(PORTO_LNG),
+    );
 
     let refused = add_photo(&repo, "c", PhotoStatus::Refused, None, None, None);
     add_proposal(&repo, &refused, 0.10, PinSource::None, None, None);
@@ -344,7 +379,14 @@ async fn accept_skip_batch_and_pin_source_none() {
     let tmp = TempDir::new().unwrap();
     let repo = create_repo(tmp.path());
     let good = add_photo(&repo, "a", PhotoStatus::Proposed, None, None, None);
-    add_proposal(&repo, &good, 0.83, PinSource::Geocoder, Some(PORTO_LAT), Some(PORTO_LNG));
+    add_proposal(
+        &repo,
+        &good,
+        0.83,
+        PinSource::Geocoder,
+        Some(PORTO_LAT),
+        Some(PORTO_LNG),
+    );
     let none_id = add_photo(&repo, "b", PhotoStatus::Proposed, None, None, None);
     add_proposal(&repo, &none_id, 0.83, PinSource::None, None, None);
 
@@ -428,11 +470,32 @@ async fn cluster_apply_and_pin_apply_enforce_k9_k18_caps() {
         Some("2019:06:14 18:04:00"),
         None,
     );
-    add_proposal(&repo, &src, 0.83, PinSource::Geocoder, Some(PORTO_LAT), Some(PORTO_LNG));
+    add_proposal(
+        &repo,
+        &src,
+        0.83,
+        PinSource::Geocoder,
+        Some(PORTO_LAT),
+        Some(PORTO_LNG),
+    );
     let sib = add_photo(&repo, "sib", PhotoStatus::Proposed, Some(&cid), None, None);
-    add_proposal(&repo, &sib, 0.7, PinSource::Geocoder, Some(PORTO_LAT), Some(PORTO_LNG));
+    add_proposal(
+        &repo,
+        &sib,
+        0.7,
+        PinSource::Geocoder,
+        Some(PORTO_LAT),
+        Some(PORTO_LNG),
+    );
     let outsider = add_photo(&repo, "out", PhotoStatus::Proposed, None, None, None);
-    add_proposal(&repo, &outsider, 0.8, PinSource::Geocoder, Some(PORTO_LAT), Some(PORTO_LNG));
+    add_proposal(
+        &repo,
+        &outsider,
+        0.8,
+        PinSource::Geocoder,
+        Some(PORTO_LAT),
+        Some(PORTO_LNG),
+    );
     repo.add_decision(&src, DecisionAction::Accept, None, None, None, None)
         .unwrap();
 
@@ -494,7 +557,14 @@ async fn cluster_apply_and_pin_apply_enforce_k9_k18_caps() {
         Some("2019:06:15 09:00:00"),
         None,
     );
-    add_proposal(&repo, &far, 0.8, PinSource::Geocoder, Some(PORTO_LAT), Some(PORTO_LNG));
+    add_proposal(
+        &repo,
+        &far,
+        0.8,
+        PinSource::Geocoder,
+        Some(PORTO_LAT),
+        Some(PORTO_LNG),
+    );
 
     let (status, res) = post_authed(
         &app,
@@ -562,8 +632,22 @@ async fn geocode_enter_only_and_lazy_thumb_and_security_middleware() {
     let before = std::fs::read(&img_path).unwrap();
 
     let repo = create_repo(tmp.path());
-    let pid = add_photo(&repo, "a", PhotoStatus::Proposed, None, None, Some(&img_path));
-    add_proposal(&repo, &pid, 0.83, PinSource::Geocoder, Some(PORTO_LAT), Some(PORTO_LNG));
+    let pid = add_photo(
+        &repo,
+        "a",
+        PhotoStatus::Proposed,
+        None,
+        None,
+        Some(&img_path),
+    );
+    add_proposal(
+        &repo,
+        &pid,
+        0.83,
+        PinSource::Geocoder,
+        Some(PORTO_LAT),
+        Some(PORTO_LNG),
+    );
 
     let fake = FakeGeocoder::new();
     fake.add("Porto", vec![porto_hit("Porto")]);
@@ -635,7 +719,10 @@ async fn geocode_enter_only_and_lazy_thumb_and_security_middleware() {
         .header(CONTENT_TYPE, "text/plain")
         .body(Body::from(r#"{"q":"Porto"}"#))
         .unwrap();
-    assert_eq!(send_req(&app, req).await.0, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert_eq!(
+        send_req(&app, req).await.0,
+        StatusCode::UNSUPPORTED_MEDIA_TYPE
+    );
 
     // 5. Cross-origin / wrong-port Origin / Sec-Fetch-Site rejected (403)
     let req = Request::builder()
@@ -645,7 +732,9 @@ async fn geocode_enter_only_and_lazy_thumb_and_security_middleware() {
         .header(COOKIE, &session_cookie)
         .header(CONTENT_TYPE, "application/json")
         .header(ORIGIN, "http://127.0.0.1:9999")
-        .body(Body::from(json!({"action":"accept","photo_ids":[pid]}).to_string()))
+        .body(Body::from(
+            json!({"action":"accept","photo_ids":[pid]}).to_string(),
+        ))
         .unwrap();
     assert_eq!(send_req(&app, req).await.0, StatusCode::FORBIDDEN);
 
@@ -656,7 +745,9 @@ async fn geocode_enter_only_and_lazy_thumb_and_security_middleware() {
         .header(COOKIE, &session_cookie)
         .header(CONTENT_TYPE, "application/json")
         .header("Sec-Fetch-Site", "cross-site")
-        .body(Body::from(json!({"action":"accept","photo_ids":[pid]}).to_string()))
+        .body(Body::from(
+            json!({"action":"accept","photo_ids":[pid]}).to_string(),
+        ))
         .unwrap();
     assert_eq!(send_req(&app, req).await.0, StatusCode::FORBIDDEN);
     assert!(repo.get_current_decision(&pid).unwrap().is_none());
@@ -682,7 +773,10 @@ async fn geocode_enter_only_and_lazy_thumb_and_security_middleware() {
     // 7. Lazy thumb & preview by UUID
     let (st, headers, thumb_bytes) = get_authed(&app, &token, &format!("/api/thumb/{pid}")).await;
     assert_eq!(st, StatusCode::OK);
-    assert!(headers[CONTENT_TYPE].to_str().unwrap().starts_with("image/jpeg"));
+    assert!(headers[CONTENT_TYPE]
+        .to_str()
+        .unwrap()
+        .starts_with("image/jpeg"));
     assert_eq!(&thumb_bytes[..2], b"\xff\xd8");
     assert!(thumb_path(&job_dir(tmp.path(), JOB_ID), &pid).is_file());
 

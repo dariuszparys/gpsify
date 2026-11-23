@@ -185,12 +185,11 @@ pub async fn security_middleware(
     }
 
     let mut response = next.run(request).await;
-    if path == "/" || path.starts_with("/api/") {
-        if !response.headers().contains_key(CACHE_CONTROL) {
-            response
-                .headers_mut()
-                .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-        }
+    if (path == "/" || path.starts_with("/api/")) && !response.headers().contains_key(CACHE_CONTROL)
+    {
+        response
+            .headers_mut()
+            .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     }
     response
 }

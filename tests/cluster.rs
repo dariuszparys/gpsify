@@ -32,10 +32,20 @@ fn parent_of_root_and_nested() {
 
 #[test]
 fn parse_capture_time_exif_and_iso() {
-    let expected = NaiveDateTime::parse_from_str("2019-06-14 18:02:00", "%Y-%m-%d %H:%M:%S").unwrap();
-    assert_eq!(parse_capture_time(Some("2019:06:14 18:02:00")), Some(expected));
-    assert_eq!(parse_capture_time(Some("2019-06-14T18:02:00")), Some(expected));
-    assert_eq!(parse_capture_time(Some("2019-06-14T18:02:00Z")), Some(expected));
+    let expected =
+        NaiveDateTime::parse_from_str("2019-06-14 18:02:00", "%Y-%m-%d %H:%M:%S").unwrap();
+    assert_eq!(
+        parse_capture_time(Some("2019:06:14 18:02:00")),
+        Some(expected)
+    );
+    assert_eq!(
+        parse_capture_time(Some("2019-06-14T18:02:00")),
+        Some(expected)
+    );
+    assert_eq!(
+        parse_capture_time(Some("2019-06-14T18:02:00Z")),
+        Some(expected)
+    );
     assert_eq!(
         parse_capture_time(Some("2019-06-14T18:02:00+02:00")),
         Some(expected)
@@ -53,7 +63,11 @@ fn forty_five_minute_gap_splits_dated_clusters() {
     let equal = plan_clusters(&[member("a.jpg", Some(t0)), member("b.jpg", Some(t_eq))]);
     assert_eq!(equal.len(), 1);
     assert_eq!(
-        equal[0].members.iter().map(|m| m.relpath.as_str()).collect::<Vec<_>>(),
+        equal[0]
+            .members
+            .iter()
+            .map(|m| m.relpath.as_str())
+            .collect::<Vec<_>>(),
         vec!["a.jpg", "b.jpg"]
     );
 
@@ -78,7 +92,11 @@ fn undated_bucket_per_directory_not_mixed_with_dated() {
         .find(|p| p.parent == "day1" && p.undated)
         .unwrap();
     assert_eq!(
-        undated_day1.members.iter().map(|m| m.relpath.as_str()).collect::<Vec<_>>(),
+        undated_day1
+            .members
+            .iter()
+            .map(|m| m.relpath.as_str())
+            .collect::<Vec<_>>(),
         vec!["day1/undated_a.jpg", "day1/undated_b.jpg"]
     );
     assert_eq!(undated_day1.first_ts, None);

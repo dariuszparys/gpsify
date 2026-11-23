@@ -456,7 +456,9 @@ fn validate_unit_float(value: f64, field: &str) -> Result<(), TypeError> {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Clue {
-    #[schemars(description = "sign|language|architecture|vegetation|road|vehicle|text|skyline|other")]
+    #[schemars(
+        description = "sign|language|architecture|vegetation|road|vehicle|text|skyline|other"
+    )]
     pub kind: String,
     pub text: String,
     #[schemars(range(min = 0.0, max = 1.0))]
@@ -514,12 +516,16 @@ impl VisionGuess {
             validate_unit_float(cand.confidence, &format!("candidates[{i}].confidence"))?;
             if let Some(lat) = cand.lat_hint {
                 if !lat.is_finite() {
-                    return Err(TypeError(format!("candidates[{i}].lat_hint must be finite")));
+                    return Err(TypeError(format!(
+                        "candidates[{i}].lat_hint must be finite"
+                    )));
                 }
             }
             if let Some(lng) = cand.lng_hint {
                 if !lng.is_finite() {
-                    return Err(TypeError(format!("candidates[{i}].lng_hint must be finite")));
+                    return Err(TypeError(format!(
+                        "candidates[{i}].lng_hint must be finite"
+                    )));
                 }
             }
         }
@@ -537,8 +543,8 @@ impl VisionGuess {
     }
 
     pub fn from_json_str(raw: &str) -> Result<Self, TypeError> {
-        let guess: Self =
-            serde_json::from_str(raw).map_err(|e| TypeError(format!("invalid VisionGuess: {e}")))?;
+        let guess: Self = serde_json::from_str(raw)
+            .map_err(|e| TypeError(format!("invalid VisionGuess: {e}")))?;
         guess.validate()?;
         Ok(guess)
     }

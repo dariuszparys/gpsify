@@ -27,7 +27,8 @@ pub const THUMB_LONG_EDGE: u32 = 256;
 pub const JPEG_QUALITY: u8 = 85;
 pub const MIN_RAW_PREVIEW_EDGE: u32 = 256;
 pub const HASH_CHUNK_SIZE: usize = 1024 * 1024;
-pub const RAW_PREVIEW_TAGS: &[&str] = &["JpgFromRaw", "PreviewImage", "OtherImage", "ThumbnailImage"];
+pub const RAW_PREVIEW_TAGS: &[&str] =
+    &["JpgFromRaw", "PreviewImage", "OtherImage", "ThumbnailImage"];
 
 #[derive(Debug, Error)]
 #[error("{message}")]
@@ -113,10 +114,7 @@ pub fn render_jpeg(
 
     let jpeg = match resolved_kind {
         MediaKind::Unsupported => {
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             return Err(MediaError::new(
                 format!("unsupported media for preview: {ext}"),
                 PhotoStatus::SkippedUnsupported,
@@ -134,9 +132,8 @@ pub fn render_jpeg(
         }
     };
 
-    let digest = hash_file(path).map_err(|e| {
-        MediaError::new(format!("failed to hash source: {e}"), PhotoStatus::Error)
-    })?;
+    let digest = hash_file(path)
+        .map_err(|e| MediaError::new(format!("failed to hash source: {e}"), PhotoStatus::Error))?;
     if digest != expected_sha256 {
         return Err(MediaError::new(
             "source sha256 changed; refusing to send preview",
@@ -265,10 +262,7 @@ where
 
 fn exiftool_binary_tag(path: &Path, tag: &str) -> Vec<u8> {
     let mut cmd = Command::new("exiftool");
-    cmd.arg("-b")
-        .arg(format!("-{tag}"))
-        .arg("--")
-        .arg(path);
+    cmd.arg("-b").arg(format!("-{tag}")).arg("--").arg(path);
     match run_command_with_timeout(&mut cmd, Duration::from_secs(EXIFTOOL_TIMEOUT_S)) {
         Ok(out) => out.stdout,
         Err(_) => Vec::new(),
@@ -285,12 +279,12 @@ fn jpeg_long_edge(blob: &[u8]) -> Option<u32> {
 }
 
 #[cfg(target_os = "macos")]
-fn render_from_bytes(bytes: &[u8], _kind: MediaKind, long_edge: u32) -> Result<Vec<u8>, MediaError> {
-    crate::media_macos::render_jpeg_from_bytes(
-        bytes,
-        long_edge,
-        f64::from(JPEG_QUALITY) / 100.0,
-    )
+fn render_from_bytes(
+    bytes: &[u8],
+    _kind: MediaKind,
+    long_edge: u32,
+) -> Result<Vec<u8>, MediaError> {
+    crate::media_macos::render_jpeg_from_bytes(bytes, long_edge, f64::from(JPEG_QUALITY) / 100.0)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -314,9 +308,13 @@ fn render_from_bytes(bytes: &[u8], kind: MediaKind, long_edge: u32) -> Result<Ve
     } else {
         ImageReader::new(std::io::Cursor::new(bytes))
             .with_guessed_format()
-            .map_err(|e| MediaError::new(format!("unreadable: {e}"), PhotoStatus::SkippedUnreadable))?
+            .map_err(|e| {
+                MediaError::new(format!("unreadable: {e}"), PhotoStatus::SkippedUnreadable)
+            })?
             .decode()
-            .map_err(|e| MediaError::new(format!("unreadable: {e}"), PhotoStatus::SkippedUnreadable))?
+            .map_err(|e| {
+                MediaError::new(format!("unreadable: {e}"), PhotoStatus::SkippedUnreadable)
+            })?
     };
 
     if let Ok(exif_data) = exif::Reader::new().read_from_container(&mut std::io::Cursor::new(bytes))
@@ -343,7 +341,8 @@ fn render_from_bytes(bytes: &[u8], kind: MediaKind, long_edge: u32) -> Result<Ve
             .resize(
                 &rgb,
                 &mut dst,
-                &fr::ResizeOptions::new().resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::Lanczos3)),
+                &fr::ResizeOptions::new()
+                    .resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::Lanczos3)),
             )
             .map_err(|e| MediaError::new(format!("resize failed: {e}"), PhotoStatus::Error))?;
         image::RgbImage::from_raw(new_w, new_h, dst.into_vec())
@@ -364,20 +363,32 @@ fn decode_heic_libheif(bytes: &[u8]) -> Result<image::DynamicImage, MediaError> 
     use libheif_rs::{ColorSpace, HeifContext, LibHeif, RgbChroma};
     let lib = LibHeif::new();
     let ctx = HeifContext::read_from_bytes(bytes).map_err(|e| {
-        MediaError::new(format!("unreadable HEIC: {e}"), PhotoStatus::SkippedUnreadable)
+        MediaError::new(
+            format!("unreadable HEIC: {e}"),
+            PhotoStatus::SkippedUnreadable,
+        )
     })?;
     let handle = ctx.primary_image_handle().map_err(|e| {
-        MediaError::new(format!("unreadable HEIC: {e}"), PhotoStatus::SkippedUnreadable)
+        MediaError::new(
+            format!("unreadable HEIC: {e}"),
+            PhotoStatus::SkippedUnreadable,
+        )
     })?;
     let decoded = lib
         .decode(&handle, ColorSpace::Rgb(RgbChroma::Rgb), None)
         .map_err(|e| {
-            MediaError::new(format!("unreadable HEIC: {e}"), PhotoStatus::SkippedUnreadable)
+            MediaError::new(
+                format!("unreadable HEIC: {e}"),
+                PhotoStatus::SkippedUnreadable,
+            )
         })?;
     let w = decoded.width();
     let h = decoded.height();
     let plane = decoded.planes().interleaved.ok_or_else(|| {
-        MediaError::new("unreadable HEIC: no interleaved RGB plane", PhotoStatus::SkippedUnreadable)
+        MediaError::new(
+            "unreadable HEIC: no interleaved RGB plane",
+            PhotoStatus::SkippedUnreadable,
+        )
     })?;
     let mut rgb = Vec::with_capacity((w * h * 3) as usize);
     for y in 0..h as usize {
