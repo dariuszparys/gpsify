@@ -1,5 +1,6 @@
 pub mod db;
 pub mod index;
+pub mod lock;
 pub mod repo;
 
 pub use db::{
@@ -11,6 +12,7 @@ pub use index::{
     canonical_root, looks_like_uuid, options_hash, resolve_job_handle, IndexRow, JobIndex,
     ResolvedJob, LAST_HANDLE,
 };
+pub use lock::JobExclusiveLock;
 pub use repo::{
     ClusterRow, DecisionRow, JobRepo, JobRow, NewPhoto, NewProposal, PhotoPatch, PhotoRow,
     ProposalRow, UpsertWriteReceipt, WriteReceiptRow,
