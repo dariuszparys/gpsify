@@ -39,25 +39,25 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install exiftool
 
-      - name: Install ExifTool (Linux)
+      - name: Install ExifTool and desktop system libs (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libimage-exiftool-perl
+          sudo apt-get install -y libimage-exiftool-perl libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev
 
       - name: Check formatting
         run: cargo fmt --check
 
       - name: Run Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Run test suite (macOS, including headless Chrome)
         if: runner.os == 'macOS'
-        run: cargo test --locked
+        run: cargo test --workspace --locked
 
       - name: Run test suite (Linux, without browser E2E)
         if: runner.os == 'Linux'
-        run: cargo test --locked -- --skip headless_chrome_review_workflows
+        run: cargo test --workspace --locked -- --skip headless_chrome_review_workflows
 
-      - name: Build release binary
-        run: cargo build --release --locked
+      - name: Build release binaries
+        run: cargo build --workspace --release --locked

@@ -277,6 +277,27 @@ pub async fn static_asset(AxumPath(path): AxumPath<String>) -> Response {
     serve_asset(trimmed)
 }
 
+pub async fn vendor_asset(AxumPath(path): AxumPath<String>) -> Response {
+    let trimmed = path.trim_start_matches('/');
+    if trimmed.contains("..") || trimmed.is_empty() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    serve_asset(&format!("vendor/{trimmed}"))
+}
+
+pub async fn root_static_asset(AxumPath(file): AxumPath<String>) -> Response {
+    let trimmed = file.trim_start_matches('/');
+    if trimmed.is_empty()
+        || trimmed == "index.html"
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains("..")
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    serve_asset(trimmed)
+}
+
 fn serve_asset(path: &str) -> Response {
     let Some(file) = StaticAssets::get(path) else {
         return StatusCode::NOT_FOUND.into_response();
@@ -296,7 +317,7 @@ fn serve_asset(path: &str) -> Response {
     resp
 }
 
-pub async fn api_job(State(state): State<ReviewState>) -> Response {
+pub async fn job_payload(state: &ReviewState) -> Result<Value, (StatusCode, String)> {
     let repo = state.repo.clone();
     let map_tile_url = state.settings.map_tile_url.clone();
     let res = tokio::task::spawn_blocking(move || {
@@ -304,34 +325,36 @@ pub async fn api_job(State(state): State<ReviewState>) -> Response {
         let counts = repo.count_photos_by_status()?;
         Ok::<_, StoreError>((job, counts))
     })
-    .await;
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    match res {
-        Ok(Ok((Some(job), counts))) => Json(json!({
-            "id": job.id,
-            "root_path": job.root_path,
-            "hint": job.hint,
-            "counts": counts,
-            "attribution": OSM_ATTRIBUTION,
-            "map_tile_url": map_tile_url,
-        }))
-        .into_response(),
-        Ok(Ok((None, _))) => api_error(StatusCode::NOT_FOUND, "job not found"),
-        Ok(Err(e)) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    let Some(job) = res.0 else {
+        return Err((StatusCode::NOT_FOUND, "job not found".to_string()));
+    };
+    Ok(json!({
+        "id": job.id,
+        "root_path": job.root_path,
+        "hint": job.hint,
+        "counts": res.1,
+        "attribution": OSM_ATTRIBUTION,
+        "map_tile_url": map_tile_url,
+    }))
+}
+
+pub async fn api_job(State(state): State<ReviewState>) -> Response {
+    match job_payload(&state).await {
+        Ok(val) => Json(val).into_response(),
+        Err((code, msg)) => api_error(code, msg),
     }
 }
 
-pub async fn api_photos(
-    State(state): State<ReviewState>,
-    Query(query): Query<PhotosQuery>,
-) -> Response {
-    let filt = match parse_photo_filter(query.status.as_deref()) {
-        Ok(f) => f,
-        Err(e) => return api_error(StatusCode::BAD_REQUEST, e.0),
-    };
+pub async fn photos_payload(
+    state: &ReviewState,
+    filter: PhotoFilter,
+) -> Result<Value, (StatusCode, String)> {
     let repo = state.repo.clone();
-    let res = tokio::task::spawn_blocking(move || {
+    let records = tokio::task::spawn_blocking(move || {
         let photos = repo.list_photos()?;
         let proposals: BTreeMap<String, ProposalRow> = repo
             .list_current_proposals()?
@@ -347,7 +370,7 @@ pub async fn api_photos(
             .iter()
             .filter_map(|photo| {
                 let prop = proposals.get(&photo.id);
-                if !photo_matches(photo, prop, filt) {
+                if !photo_matches(photo, prop, filter) {
                     return None;
                 }
                 Some(serialize_photo(photo, prop, decisions.get(&photo.id)))
@@ -355,63 +378,87 @@ pub async fn api_photos(
             .collect();
         Ok::<_, StoreError>(records)
     })
-    .await;
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    match res {
-        Ok(Ok(records)) => Json(json!({
-            "photos": records,
-            "filter": filt.as_str(),
-        }))
-        .into_response(),
-        Ok(Err(e)) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    Ok(json!({
+        "photos": records,
+        "filter": filter.as_str(),
+    }))
+}
+
+pub async fn api_photos(
+    State(state): State<ReviewState>,
+    Query(query): Query<PhotosQuery>,
+) -> Response {
+    let filt = match parse_photo_filter(query.status.as_deref()) {
+        Ok(f) => f,
+        Err(e) => return api_error(StatusCode::BAD_REQUEST, e.0),
+    };
+    match photos_payload(&state, filt).await {
+        Ok(val) => Json(val).into_response(),
+        Err((code, msg)) => api_error(code, msg),
     }
+}
+
+pub async fn photo_detail_payload(
+    state: &ReviewState,
+    photo_id: &str,
+) -> Result<Value, (StatusCode, String)> {
+    let repo = state.repo.clone();
+    let pid = photo_id.to_string();
+    let found = tokio::task::spawn_blocking(move || {
+        let photo = repo.get_photo(&pid)?;
+        let Some(photo) = photo else {
+            return Ok::<_, StoreError>(None);
+        };
+        let prop = repo.get_current_proposal(&pid)?;
+        let dec = repo.get_current_decision(&pid)?;
+        Ok(Some(serialize_photo(&photo, prop.as_ref(), dec.as_ref())))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    found.ok_or_else(|| (StatusCode::NOT_FOUND, "photo not found".to_string()))
 }
 
 pub async fn api_photo_detail(
     State(state): State<ReviewState>,
     AxumPath(photo_id): AxumPath<String>,
 ) -> Response {
-    let repo = state.repo.clone();
-    let res = tokio::task::spawn_blocking(move || {
-        let photo = repo.get_photo(&photo_id)?;
-        let Some(photo) = photo else {
-            return Ok::<_, StoreError>(None);
-        };
-        let prop = repo.get_current_proposal(&photo_id)?;
-        let dec = repo.get_current_decision(&photo_id)?;
-        Ok(Some(serialize_photo(&photo, prop.as_ref(), dec.as_ref())))
-    })
-    .await;
-
-    match res {
-        Ok(Ok(Some(val))) => Json(val).into_response(),
-        Ok(Ok(None)) => api_error(StatusCode::NOT_FOUND, "photo not found"),
-        Ok(Err(e)) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    match photo_detail_payload(&state, &photo_id).await {
+        Ok(val) => Json(val).into_response(),
+        Err((code, msg)) => api_error(code, msg),
     }
 }
 
-async fn serve_derived(state: ReviewState, photo_id: String, preview: bool) -> Response {
+pub async fn media_jpeg_bytes(
+    state: &ReviewState,
+    photo_id: &str,
+    preview: bool,
+) -> Result<Vec<u8>, (StatusCode, String)> {
     let repo = state.repo.clone();
-    let lookup = tokio::task::spawn_blocking(move || repo.get_photo(&photo_id)).await;
-    let photo = match lookup {
-        Ok(Ok(Some(p))) => p,
-        Ok(Ok(None)) => return api_error(StatusCode::NOT_FOUND, "photo not found"),
-        Ok(Err(e)) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-        Err(e) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    };
+    let pid = photo_id.to_string();
+    let photo = tokio::task::spawn_blocking(move || repo.get_photo(&pid))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "photo not found".to_string()))?;
 
     let source = PathBuf::from(&photo.path);
     if !source.is_file() {
-        return api_error(StatusCode::NOT_FOUND, "source missing");
+        return Err((StatusCode::NOT_FOUND, "source missing".to_string()));
     }
     let job_root = state.job_root.clone();
-    let _permit = match state.media_slots.acquire().await {
-        Ok(p) => p,
-        Err(_) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "media semaphore closed"),
-    };
-    let derived = tokio::task::spawn_blocking(move || {
+    let _permit = state.media_slots.acquire().await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "media semaphore closed".to_string(),
+        )
+    })?;
+    tokio::task::spawn_blocking(move || {
         let kind = classify_media(&source);
         let dest = if preview {
             ensure_preview(&job_root, &photo.id, &source, &photo.sha256, Some(kind))?
@@ -421,17 +468,20 @@ async fn serve_derived(state: ReviewState, photo_id: String, preview: bool) -> R
         std::fs::read(&dest)
             .map_err(|e| crate::media::MediaError::new(e.to_string(), PhotoStatus::Error))
     })
-    .await;
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::NOT_FOUND, e.message))
+}
 
-    match derived {
-        Ok(Ok(bytes)) => {
+async fn serve_derived(state: ReviewState, photo_id: String, preview: bool) -> Response {
+    match media_jpeg_bytes(&state, &photo_id, preview).await {
+        Ok(bytes) => {
             let mut resp = (StatusCode::OK, bytes).into_response();
             resp.headers_mut()
                 .insert(CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
             resp
         }
-        Ok(Err(e)) => api_error(StatusCode::NOT_FOUND, e.message),
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err((code, msg)) => api_error(code, msg),
     }
 }
 
@@ -449,16 +499,17 @@ pub async fn api_preview(
     serve_derived(state, photo_id, true).await
 }
 
-pub async fn api_cluster(
-    State(state): State<ReviewState>,
-    AxumPath(cluster_id): AxumPath<String>,
-) -> Response {
+pub async fn cluster_payload(
+    state: &ReviewState,
+    cluster_id: &str,
+) -> Result<Value, (StatusCode, String)> {
     let repo = state.repo.clone();
-    let res = tokio::task::spawn_blocking(move || {
-        let Some(cluster) = repo.get_cluster(&cluster_id)? else {
+    let cid = cluster_id.to_string();
+    let found = tokio::task::spawn_blocking(move || {
+        let Some(cluster) = repo.get_cluster(&cid)? else {
             return Ok::<_, StoreError>(None);
         };
-        let members = repo.list_photos_in_cluster(&cluster_id)?;
+        let members = repo.list_photos_in_cluster(&cid)?;
         let proposals: BTreeMap<String, ProposalRow> = repo
             .list_current_proposals()?
             .into_iter()
@@ -492,13 +543,63 @@ pub async fn api_cluster(
             "members": payload_members,
         })))
     })
-    .await;
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    found.ok_or_else(|| (StatusCode::NOT_FOUND, "cluster not found".to_string()))
+}
+
+pub async fn api_cluster(
+    State(state): State<ReviewState>,
+    AxumPath(cluster_id): AxumPath<String>,
+) -> Response {
+    match cluster_payload(&state, &cluster_id).await {
+        Ok(val) => Json(val).into_response(),
+        Err((code, msg)) => api_error(code, msg),
+    }
+}
+
+pub async fn decide_one(
+    state: &ReviewState,
+    photo_id: &str,
+    body: DecisionBody,
+) -> Result<Value, (StatusCode, String)> {
+    if body.action == DecisionAction::ClusterApply {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "cluster_apply belongs on POST /api/clusters/{id}/apply".to_string(),
+        ));
+    }
+
+    let _lock = state.mutation_lock.lock().await;
+    let repo = state.repo.clone();
+    let pid = photo_id.to_string();
+    let res = tokio::task::spawn_blocking(move || {
+        let decision_id = repo.add_decision(
+            &pid,
+            body.action,
+            body.lat,
+            body.lng,
+            None,
+            body.place_name.as_deref(),
+        )?;
+        let decision = repo.get_current_decision(&pid)?;
+        let photo = repo.get_photo(&pid)?;
+        let proposal = repo.get_current_proposal(&pid)?;
+        Ok::<_, StoreError>((decision_id, photo, proposal, decision))
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     match res {
-        Ok(Ok(Some(val))) => Json(val).into_response(),
-        Ok(Ok(None)) => api_error(StatusCode::NOT_FOUND, "cluster not found"),
-        Ok(Err(e)) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Ok((decision_id, Some(photo), proposal, decision)) => Ok(json!({
+            "decision_id": decision_id,
+            "photo": serialize_photo(&photo, proposal.as_ref(), decision.as_ref()),
+        })),
+        Ok((_, None, _, _)) => Err((StatusCode::NOT_FOUND, "photo not found".to_string())),
+        Err(StoreError::Decision(msg)) => Err((StatusCode::BAD_REQUEST, msg)),
+        Err(e) => Err((StatusCode::NOT_FOUND, e.to_string())),
     }
 }
 
@@ -511,41 +612,9 @@ pub async fn api_decision(
         Ok(b) => b,
         Err(resp) => return *resp,
     };
-    if body.action == DecisionAction::ClusterApply {
-        return api_error(
-            StatusCode::BAD_REQUEST,
-            "cluster_apply belongs on POST /api/clusters/{id}/apply",
-        );
-    }
-
-    let _lock = state.mutation_lock.lock().await;
-    let repo = state.repo.clone();
-    let res = tokio::task::spawn_blocking(move || {
-        let decision_id = repo.add_decision(
-            &photo_id,
-            body.action,
-            body.lat,
-            body.lng,
-            None,
-            body.place_name.as_deref(),
-        )?;
-        let decision = repo.get_current_decision(&photo_id)?;
-        let photo = repo.get_photo(&photo_id)?;
-        let proposal = repo.get_current_proposal(&photo_id)?;
-        Ok::<_, StoreError>((decision_id, photo, proposal, decision))
-    })
-    .await;
-
-    match res {
-        Ok(Ok((decision_id, Some(photo), proposal, decision))) => Json(json!({
-            "decision_id": decision_id,
-            "photo": serialize_photo(&photo, proposal.as_ref(), decision.as_ref()),
-        }))
-        .into_response(),
-        Ok(Ok((_, None, _, _))) => api_error(StatusCode::NOT_FOUND, "photo not found"),
-        Ok(Err(StoreError::Decision(msg))) => api_error(StatusCode::BAD_REQUEST, msg),
-        Ok(Err(e)) => api_error(StatusCode::NOT_FOUND, e.to_string()),
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    match decide_one(&state, &photo_id, body).await {
+        Ok(val) => Json(val).into_response(),
+        Err((code, msg)) => api_error(code, msg),
     }
 }
 
@@ -560,35 +629,34 @@ fn dedup_preserve(ids: &[String]) -> Vec<String> {
     out
 }
 
-pub async fn api_decisions(State(state): State<ReviewState>, body_bytes: Bytes) -> Response {
-    let body: BatchDecisionBody = match parse_json_body(&body_bytes) {
-        Ok(b) => b,
-        Err(resp) => return *resp,
-    };
+pub async fn decide_many(
+    state: &ReviewState,
+    body: BatchDecisionBody,
+) -> Result<Value, (StatusCode, String)> {
     if body.photo_ids.is_empty() {
-        return api_error(
+        return Err((
             StatusCode::BAD_REQUEST,
-            "invalid body: photo_ids must not be empty",
-        );
+            "invalid body: photo_ids must not be empty".to_string(),
+        ));
     }
     if !matches!(body.action, DecisionAction::Accept | DecisionAction::Skip) {
-        return api_error(
+        return Err((
             StatusCode::BAD_REQUEST,
-            "batch decisions support accept or skip only",
-        );
+            "batch decisions support accept or skip only".to_string(),
+        ));
     }
     if body.lat.is_some() || body.lng.is_some() {
-        return api_error(
+        return Err((
             StatusCode::BAD_REQUEST,
-            "batch decisions must not copy coordinates",
-        );
+            "batch decisions must not copy coordinates".to_string(),
+        ));
     }
 
     let _lock = state.mutation_lock.lock().await;
     let repo = state.repo.clone();
     let ids = dedup_preserve(&body.photo_ids);
     let action = body.action;
-    let res = tokio::task::spawn_blocking(move || {
+    let (photos, errors, counts) = tokio::task::spawn_blocking(move || {
         let mut photos = Vec::new();
         let mut errors = Vec::new();
         for pid in ids {
@@ -608,17 +676,25 @@ pub async fn api_decisions(State(state): State<ReviewState>, body_bytes: Bytes) 
         let counts = repo.count_photos_by_status()?;
         Ok::<_, StoreError>((photos, errors, counts))
     })
-    .await;
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    match res {
-        Ok(Ok((photos, errors, counts))) => Json(json!({
-            "photos": photos,
-            "errors": errors,
-            "counts": counts,
-        }))
-        .into_response(),
-        Ok(Err(e)) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    Ok(json!({
+        "photos": photos,
+        "errors": errors,
+        "counts": counts,
+    }))
+}
+
+pub async fn api_decisions(State(state): State<ReviewState>, body_bytes: Bytes) -> Response {
+    let body: BatchDecisionBody = match parse_json_body(&body_bytes) {
+        Ok(b) => b,
+        Err(resp) => return *resp,
+    };
+    match decide_many(&state, body).await {
+        Ok(val) => Json(val).into_response(),
+        Err((code, msg)) => api_error(code, msg),
     }
 }
 
@@ -699,33 +775,30 @@ fn apply_source_pin(
     }))
 }
 
-pub async fn api_cluster_apply(
-    State(state): State<ReviewState>,
-    AxumPath(cluster_id): AxumPath<String>,
-    body_bytes: Bytes,
-) -> Response {
-    let body: ClusterApplyBody = match parse_json_body(&body_bytes) {
-        Ok(b) => b,
-        Err(resp) => return *resp,
-    };
+pub async fn apply_cluster(
+    state: &ReviewState,
+    cluster_id: &str,
+    body: ClusterApplyBody,
+) -> Result<Value, (StatusCode, String)> {
     if body.photo_ids.is_empty() {
-        return api_error(
+        return Err((
             StatusCode::BAD_REQUEST,
-            "invalid body: photo_ids must not be empty",
-        );
+            "invalid body: photo_ids must not be empty".to_string(),
+        ));
     }
 
     let _lock = state.mutation_lock.lock().await;
     let repo = state.repo.clone();
-    let res = tokio::task::spawn_blocking(move || {
+    let cid = cluster_id.to_string();
+    tokio::task::spawn_blocking(move || {
         let Some(cluster) = repo
-            .get_cluster(&cluster_id)
+            .get_cluster(&cid)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         else {
             return Err((StatusCode::NOT_FOUND, "cluster not found".to_string()));
         };
         let members = repo
-            .list_photos_in_cluster(&cluster_id)
+            .list_photos_in_cluster(&cid)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         apply_source_pin(
             &repo,
@@ -737,30 +810,39 @@ pub async fn api_cluster_apply(
             "cluster",
         )
     })
-    .await;
-
-    match res {
-        Ok(Ok(payload)) => Json(payload).into_response(),
-        Ok(Err((code, msg))) => api_error(code, msg),
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
 }
 
-pub async fn api_pin_apply(State(state): State<ReviewState>, body_bytes: Bytes) -> Response {
+pub async fn api_cluster_apply(
+    State(state): State<ReviewState>,
+    AxumPath(cluster_id): AxumPath<String>,
+    body_bytes: Bytes,
+) -> Response {
     let body: ClusterApplyBody = match parse_json_body(&body_bytes) {
         Ok(b) => b,
         Err(resp) => return *resp,
     };
+    match apply_cluster(&state, &cluster_id, body).await {
+        Ok(payload) => Json(payload).into_response(),
+        Err((code, msg)) => api_error(code, msg),
+    }
+}
+
+pub async fn apply_pin(
+    state: &ReviewState,
+    body: ClusterApplyBody,
+) -> Result<Value, (StatusCode, String)> {
     if body.photo_ids.is_empty() {
-        return api_error(
+        return Err((
             StatusCode::BAD_REQUEST,
-            "invalid body: photo_ids must not be empty",
-        );
+            "invalid body: photo_ids must not be empty".to_string(),
+        ));
     }
 
     let _lock = state.mutation_lock.lock().await;
     let repo = state.repo.clone();
-    let res = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         let mut all_wanted = Vec::with_capacity(body.photo_ids.len() + 1);
         all_wanted.push(body.source_photo_id.clone());
         all_wanted.extend(body.photo_ids.iter().cloned());
@@ -785,13 +867,60 @@ pub async fn api_pin_apply(State(state): State<ReviewState>, body_bytes: Bytes) 
             "selection",
         )
     })
-    .await;
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+}
 
-    match res {
-        Ok(Ok(payload)) => Json(payload).into_response(),
-        Ok(Err((code, msg))) => api_error(code, msg),
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+pub async fn api_pin_apply(State(state): State<ReviewState>, body_bytes: Bytes) -> Response {
+    let body: ClusterApplyBody = match parse_json_body(&body_bytes) {
+        Ok(b) => b,
+        Err(resp) => return *resp,
+    };
+    match apply_pin(&state, body).await {
+        Ok(payload) => Json(payload).into_response(),
+        Err((code, msg)) => api_error(code, msg),
     }
+}
+
+pub async fn geocode_place(
+    state: &ReviewState,
+    body: GeocodeBody,
+) -> Result<Value, (StatusCode, String)> {
+    let query = body.q.trim().to_string();
+    if query.chars().count() < GEOCODE_MIN_Q_LEN {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("q must be at least {GEOCODE_MIN_Q_LEN} characters"),
+        ));
+    }
+    if looks_like_house_address(&query) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "refusing to geocode a house-address string".to_string(),
+        ));
+    }
+    if state.service.geocoder_name() == "unconfigured" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "nominatim_contact is required for public Nominatim (set NOMINATIM_CONTACT or configure geocoder_url)"
+                .to_string(),
+        ));
+    }
+    let result = state
+        .service
+        .lookup_primary(&query, body.country_code.as_deref(), Granularity::Unknown)
+        .await;
+    if result.skipped.as_deref() == Some("house_address") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "refusing to geocode a house-address string".to_string(),
+        ));
+    }
+    Ok(json!({
+        "hit": result.hit,
+        "cache_hit": result.cache_hit,
+        "skipped": result.skipped,
+    }))
 }
 
 pub async fn api_geocode(State(state): State<ReviewState>, body_bytes: Bytes) -> Response {
@@ -799,33 +928,8 @@ pub async fn api_geocode(State(state): State<ReviewState>, body_bytes: Bytes) ->
         Ok(b) => b,
         Err(resp) => return *resp,
     };
-    let query = body.q.trim().to_string();
-    if query.chars().count() < GEOCODE_MIN_Q_LEN {
-        return api_error(
-            StatusCode::BAD_REQUEST,
-            format!("q must be at least {GEOCODE_MIN_Q_LEN} characters"),
-        );
+    match geocode_place(&state, body).await {
+        Ok(val) => Json(val).into_response(),
+        Err((code, msg)) => api_error(code, msg),
     }
-    if looks_like_house_address(&query) {
-        return api_error(
-            StatusCode::BAD_REQUEST,
-            "refusing to geocode a house-address string",
-        );
-    }
-    let result = state
-        .service
-        .lookup_primary(&query, body.country_code.as_deref(), Granularity::Unknown)
-        .await;
-    if result.skipped.as_deref() == Some("house_address") {
-        return api_error(
-            StatusCode::BAD_REQUEST,
-            "refusing to geocode a house-address string",
-        );
-    }
-    Json(json!({
-        "hit": result.hit,
-        "cache_hit": result.cache_hit,
-        "skipped": result.skipped,
-    }))
-    .into_response()
 }

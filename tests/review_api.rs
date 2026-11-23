@@ -250,7 +250,10 @@ fn static_search_is_enter_only() {
         .iter()
         .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(names, vec!["api.js", "app.js", "grid.js", "map.js"]);
+    assert_eq!(
+        names,
+        vec!["api.js", "app.js", "desktop.js", "grid.js", "map.js"]
+    );
 
     for path in &js_files {
         let src = std::fs::read_to_string(path).unwrap();
@@ -280,7 +283,9 @@ fn static_assets_are_local_only() {
             let url = chunk.split('"').next().unwrap_or("");
             if !url.is_empty() {
                 assert!(
-                    url.starts_with("/static/") || url.starts_with("data:"),
+                    url.starts_with("/static/")
+                        || url.starts_with("./")
+                        || url.starts_with("data:"),
                     "unexpected remote asset reference: {url}"
                 );
             }

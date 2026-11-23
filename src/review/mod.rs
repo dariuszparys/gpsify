@@ -7,6 +7,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use axum::middleware;
 use axum::routing::{get, post};
 use axum::Router;
@@ -17,13 +18,17 @@ use tokio::sync::{Mutex, Semaphore};
 
 use crate::config::Settings;
 use crate::geocode::{
-    geocode_cache_path, require_geocoder_ready, GeocodeCache, GeocodeService, NominatimGeocoder,
+    geocode_cache_path, require_geocoder_ready, GeocodeCache, GeocodeError, GeocodeService,
+    Geocoder, NominatimGeocoder,
 };
 use crate::store::{job_dir, JobRepo};
+use crate::types::GeoHit;
 
 pub use routes::{
-    batch_needs_confirm, cluster_apply_candidates, list_low_rank_photos, parse_photo_filter,
-    LowRankPhoto, PhotoFilter, StaticAssets,
+    apply_cluster, apply_pin, batch_needs_confirm, cluster_apply_candidates, cluster_payload,
+    decide_many, decide_one, geocode_place, job_payload, list_low_rank_photos, media_jpeg_bytes,
+    parse_photo_filter, photo_detail_payload, photos_payload, BatchDecisionBody, ClusterApplyBody,
+    DecisionBody, GeocodeBody, LowRankPhoto, PhotoFilter, StaticAssets,
 };
 
 pub const REVIEW_HOST: &str = "127.0.0.1";
@@ -88,6 +93,54 @@ pub fn build_review_state_for_job(
     })
 }
 
+struct UnconfiguredGeocoder(String);
+
+#[async_trait]
+impl Geocoder for UnconfiguredGeocoder {
+    fn name(&self) -> &str {
+        "unconfigured"
+    }
+
+    async fn search(
+        &self,
+        _query: &str,
+        _country_code: Option<&str>,
+        _lang: &str,
+    ) -> Result<Vec<GeoHit>, GeocodeError> {
+        Err(GeocodeError(self.0.clone()))
+    }
+}
+
+/// Build `ReviewState` for the desktop UI, allowing read/decide review even if
+/// `NOMINATIM_CONTACT` is not configured yet (interactive place search still enforces K10).
+pub fn build_review_state_for_desktop(
+    settings: Settings,
+    job_id: &str,
+) -> Result<ReviewState, ReviewError> {
+    let repo = JobRepo::open(&settings.data_dir, job_id).map_err(|e| ReviewError(e.to_string()))?;
+    let cache = GeocodeCache::open(geocode_cache_path(&settings.data_dir))
+        .map_err(|e| ReviewError(e.to_string()))?;
+    let geocoder: Arc<dyn Geocoder> = match NominatimGeocoder::new(
+        settings.geocoder_url.clone(),
+        settings.nominatim_contact.as_deref(),
+        settings.geocoder.clone(),
+    ) {
+        Ok(client) => Arc::new(client),
+        Err(err) => Arc::new(UnconfiguredGeocoder(err.to_string())),
+    };
+    let service = GeocodeService::new(geocoder, cache, settings.geocode_lang.clone(), 50, false);
+    Ok(ReviewState {
+        job_root: job_dir(&settings.data_dir, job_id),
+        settings,
+        job_id: job_id.to_string(),
+        repo,
+        service,
+        auth_token: generate_auth_token(),
+        media_slots: Arc::new(Semaphore::new(2)),
+        mutation_lock: Arc::new(Mutex::new(())),
+    })
+}
+
 pub fn create_router(state: ReviewState) -> Router {
     Router::new()
         .route("/", get(routes::index_page))
@@ -109,6 +162,8 @@ pub fn create_router(state: ReviewState) -> Router {
         .route("/api/pin/apply", post(routes::api_pin_apply))
         .route("/api/geocode", post(routes::api_geocode))
         .route("/static/{*path}", get(routes::static_asset))
+        .route("/vendor/{*path}", get(routes::vendor_asset))
+        .route("/{file}", get(routes::root_static_asset))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             security::security_middleware,

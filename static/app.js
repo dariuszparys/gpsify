@@ -10,7 +10,8 @@
                  is the "one wrong church poisons 400 photos" case, so it goes
                  through /api/pin/apply and inherits K9's caps. */
 
-import { api, previewUrl } from "./api.js";
+import { api, isDesktop, previewUrl } from "./api.js";
+import { bootDesktop, onPhotosUpdated } from "./desktop.js";
 import { createMap } from "./map.js";
 import {
   formatWhen,
@@ -172,11 +173,17 @@ function renderPhotos() {
 function emptyCopy() {
   const root = (state.job && state.job.root_path) || "<folder>";
   if (state.filter === "needs_review") {
-    return {
-      title: "Nothing left to review",
-      body: "Every photo in this job has a decision. Write the accepted pins to files with:",
-      command: `gpsify apply ${root}`,
-    };
+    return isDesktop
+      ? {
+          title: "Nothing left to review",
+          body: "All proposed photos have a decision. Use Apply in the top bar to write accepted pins.",
+          command: null,
+        }
+      : {
+          title: "Nothing left to review",
+          body: "Every photo in this job has a decision. Write the accepted pins to files with:",
+          command: `gpsify apply ${root}`,
+        };
   }
   return {
     title: "No photos in this filter",
@@ -414,6 +421,7 @@ async function decideMany(action, extra) {
     renderPhotos();
     setStatus(`${action}: ${result.photos.length} photos` +
       (result.errors.length ? `, ${result.errors.length} failed — ${result.errors[0].error}` : ""), Boolean(result.errors.length));
+    if (isDesktop) onPhotosUpdated();
   } catch (err) {
     reportError(err);
   }
@@ -494,6 +502,7 @@ async function applyPinToSelection() {
       ...(answer.confirmN === undefined ? {} : { confirm_n: answer.confirmN }),
     });
     setStatus(`Pin applied to ${result.count} photos. Nothing written to disk yet.`);
+    if (isDesktop) onPhotosUpdated();
   } catch (err) {
     reportError(err);
   }
@@ -553,6 +562,7 @@ async function toggleEditPin() {
       place_name: state.placeName || undefined,
     });
     setStatus("Pin saved. Nothing written to disk yet.");
+    if (isDesktop) onPhotosUpdated();
   } catch (err) {
     reportError(err);
   }
@@ -603,7 +613,10 @@ $("btn-model").addEventListener("click", () => {
     lat: proposal.lat_hint,
     lng: proposal.lng_hint,
     place_name: proposal.place_name,
-  }).then(() => loadPhotos()).catch(reportError);
+  }).then(() => {
+    if (isDesktop) onPhotosUpdated();
+    return loadPhotos();
+  }).catch(reportError);
 });
 $("btn-help").addEventListener("click", () => $("help-dialog").showModal());
 $("lightbox").addEventListener("click", () => toggleLightbox(false));
@@ -623,7 +636,7 @@ $("tile-size").addEventListener("change", (event) => {
 
 const search = $("place-search");
 search.addEventListener("keydown", (event) => {
-  if (event.key !== "Enter") return;
+  if (event.isComposing || event.key !== "Enter") return;
   event.preventDefault();
   runGeocode(search.value);
 });
@@ -632,6 +645,7 @@ document.addEventListener("keydown", (event) => {
   const tag = event.target && event.target.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
   if (document.querySelector("dialog[open]")) return;
+  if (!state.job && event.key !== "?") return;
 
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
     event.preventDefault();
@@ -690,6 +704,37 @@ document.addEventListener("keydown", (event) => {
 
 // ---------------------------------------------------------------- boot
 
+function ensureMapForJob(job) {
+  $("osm-attribution").textContent = (job && job.attribution) || "© OpenStreetMap contributors";
+  if (state.map) {
+    state.map.refresh();
+    return;
+  }
+  state.map = createMap("map", {
+    tileUrl: (job && job.map_tile_url) || "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attribution: (job && job.attribution) || "© OpenStreetMap contributors",
+    onPick: (lat, lng) => {
+      if (!state.editing) return;
+      state.pendingPin = { lat, lng };
+      renderPin(anchor(), (anchor() || {}).proposal);
+      renderActionBar();
+    },
+  });
+}
+
+async function loadJobIntoReview(job) {
+  state.job = job;
+  state.filter = "needs_review";
+  state.anchorId = null;
+  state.selection = new Set();
+  state.editing = false;
+  state.pendingPin = null;
+  ensureMapForJob(state.job);
+  renderFilters();
+  await loadPhotos({ keepAnchor: false });
+  if (state.map) state.map.refresh();
+}
+
 (async () => {
   try {
     let size = 160;
@@ -701,21 +746,24 @@ document.addEventListener("keydown", (event) => {
     document.documentElement.style.setProperty("--tile", `${size}px`);
     $("tile-size").value = String(size);
 
-    state.job = await api.job();
-    $("osm-attribution").textContent = state.job.attribution || "© OpenStreetMap contributors";
-    state.map = createMap("map", {
-      tileUrl: state.job.map_tile_url,
-      attribution: state.job.attribution,
-      onPick: (lat, lng) => {
-        if (!state.editing) return;
-        state.pendingPin = { lat, lng };
-        renderPin(anchor(), (anchor() || {}).proposal);
-        renderActionBar();
-      },
-    });
-    renderFilters();
-    await loadPhotos({ keepAnchor: false });
-    state.map.refresh();
+    for (const dialog of document.querySelectorAll("dialog")) {
+      dialog.addEventListener("close", () => {
+        dialog.returnValue = "";
+      });
+    }
+
+    if (isDesktop) {
+      await bootDesktop({
+        reloadJob: (job) => loadJobIntoReview(job),
+        reloadPhotos: () => loadPhotos({ keepAnchor: true }),
+        setStatus,
+        reportError,
+      });
+      return;
+    }
+
+    const job = await api.job();
+    await loadJobIntoReview(job);
   } catch (err) {
     reportError(err);
   }

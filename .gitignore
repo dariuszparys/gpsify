@@ -5,6 +5,7 @@
 
 # Rust build artifacts (Cargo.lock is intentionally tracked for binaries)
 /target
+/src-tauri/gen/
 
 # Editors / OS
 .DS_Store

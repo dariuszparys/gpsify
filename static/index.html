@@ -3,15 +3,18 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>gpsify review</title>
+  <title>gpsify</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1.5a4.2 4.2 0 0 0-4.2 4.2c0 3.1 4.2 8.8 4.2 8.8s4.2-5.7 4.2-8.8A4.2 4.2 0 0 0 8 1.5z' fill='%234c8dff'/%3E%3Ccircle cx='8' cy='5.7' r='1.6' fill='%23fff'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="/static/vendor/leaflet.css" />
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="./vendor/leaflet.css" />
+  <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
   <header class="topbar">
     <div class="brand">gps<span>ify</span></div>
-    <div class="job-name" id="job-name"></div>
+    <button type="button" id="btn-jobs" class="ghost job-switcher desktop-only" title="Switch album or scan folder">
+      <span id="job-name-desktop">No album open</span> ▾
+    </button>
+    <div class="job-name browser-only" id="job-name"></div>
     <nav id="filters" class="filters" aria-label="Filter photos">
       <button type="button" data-filter="needs_review" class="active">Needs review</button>
       <button type="button" data-filter="low">Low confidence</button>
@@ -20,12 +23,26 @@
       <button type="button" data-filter="all">All</button>
     </nav>
     <div class="spacer"></div>
+    <div class="desktop-actions desktop-only" role="toolbar" aria-label="Pipeline actions">
+      <button type="button" id="btn-open-folder" class="ghost">Open…</button>
+      <button type="button" id="btn-propose">Propose</button>
+      <button type="button" id="btn-geocode-pass" class="hidden">Geocode <span class="pill-count" id="unpinned-count">0</span></button>
+      <button type="button" id="btn-apply-gps" class="primary">Apply</button>
+      <button type="button" id="btn-undo-gps" class="ghost">Undo</button>
+      <button type="button" id="btn-doctor" class="ghost" title="Dependencies, spend, and maintenance">Status</button>
+    </div>
     <div class="zoom">
       <label for="tile-size" class="section-label">Size</label>
       <input id="tile-size" type="range" min="96" max="320" step="8" value="160" />
     </div>
     <button type="button" id="btn-help" class="ghost" title="Keyboard shortcuts">?</button>
   </header>
+
+  <div id="desktop-progress" class="desktop-progress hidden desktop-only" role="status" aria-live="polite">
+    <progress id="desktop-progress-bar"></progress>
+    <span id="desktop-progress-stage" class="progress-stage">Working</span>
+    <span id="desktop-progress-msg" class="progress-msg"></span>
+  </div>
 
   <main class="layout">
     <section id="grid-pane" class="grid-pane" aria-label="Photos"></section>
@@ -65,7 +82,7 @@
     <button type="button" id="btn-apply-pin">Apply pin<kbd>g</kbd></button>
     <button type="button" id="btn-model" class="hidden">Use model coordinates</button>
     <div class="spacer"></div>
-    <span class="status-msg" id="status-msg"></span>
+    <span class="status-msg" id="status-msg" role="status" aria-live="polite"></span>
   </footer>
 
   <div class="lightbox hidden" id="lightbox">
@@ -78,7 +95,7 @@
     </div>
   </div>
 
-  <dialog id="apply-dialog">
+  <dialog id="apply-dialog" aria-labelledby="apply-title">
     <form method="dialog" id="apply-form">
       <h2 id="apply-title">Apply this pin</h2>
       <p id="apply-body"></p>
@@ -87,15 +104,15 @@
         <input id="apply-confirm" type="number" min="1" />
       </div>
       <menu>
-        <button type="submit" value="cancel">Cancel</button>
+        <button type="submit" value="cancel" autofocus>Cancel</button>
         <button type="submit" value="apply" class="primary" id="apply-ok">Apply pin</button>
       </menu>
     </form>
   </dialog>
 
-  <dialog id="help-dialog">
+  <dialog id="help-dialog" closedby="any" aria-labelledby="help-title">
     <form method="dialog">
-      <h2>Keyboard</h2>
+      <h2 id="help-title">Keyboard</h2>
       <dl class="shortcuts">
         <dt>← → ↑ ↓</dt><dd>Move through the grid</dd>
         <dt>j / k</dt><dd>Next / previous photo</dd>
@@ -110,11 +127,150 @@
         <dt>1 – 5</dt><dd>Switch filter</dd>
         <dt>Esc</dt><dd>Cancel edit, or clear the selection</dd>
       </dl>
-      <menu><button type="submit" class="primary">Close</button></menu>
+      <menu><button type="submit" class="primary" autofocus>Close</button></menu>
     </form>
   </dialog>
 
-  <script src="/static/vendor/leaflet.js"></script>
-  <script type="module" src="/static/app.js"></script>
+  <dialog id="jobs-dialog" closedby="any" aria-labelledby="jobs-title" class="desktop-only">
+    <form method="dialog">
+      <h2 id="jobs-title">Albums</h2>
+      <p>Pick a previously scanned album or choose a new folder from disk.</p>
+      <ul id="jobs-list" class="jobs-list"></ul>
+      <menu>
+        <button type="button" id="btn-jobs-new" class="primary" autofocus>Open Folder…</button>
+        <button type="submit" value="close">Close</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="ingest-dialog" closedby="any" aria-labelledby="ingest-title" class="desktop-only">
+    <form id="ingest-form">
+      <h2 id="ingest-title">Scan Photo Folder</h2>
+      <p>Ingest reads EXIF and clusters photos locally. No photos leave your Mac and nothing is modified.</p>
+      <div class="field">
+        <label for="ingest-folder">Photo folder</label>
+        <div class="input-row">
+          <input id="ingest-folder" name="folder" type="text" required spellcheck="false" autocorrect="off" autocapitalize="none" placeholder="/Users/.../Pictures/trip" autofocus />
+          <button type="button" id="btn-ingest-browse">Choose…</button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="ingest-hint">Album / trip hint (optional)</label>
+        <input id="ingest-hint" name="hint" type="text" placeholder="e.g. weekend in Porto, 2019" />
+      </div>
+      <div class="field-check">
+        <input id="ingest-recursive" name="recursive" type="checkbox" />
+        <label for="ingest-recursive">Walk subdirectories recursively</label>
+      </div>
+      <p id="ingest-error" class="form-error hidden" aria-live="polite"></p>
+      <menu>
+        <button type="button" id="btn-ingest-cancel">Cancel</button>
+        <button type="submit" class="primary" id="btn-ingest-submit">Scan Folder</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="propose-dialog" closedby="any" aria-labelledby="propose-title" class="desktop-only">
+    <form id="propose-form">
+      <h2 id="propose-title">Propose Locations</h2>
+      <p>Sends 1280 px JPEG previews to the selected vision provider and geocodes guessed place names. Never writes to photo files.</p>
+      <fieldset class="field-group">
+        <legend>Vision provider</legend>
+        <div class="radio-row">
+          <input id="prov-xai" name="provider" type="radio" value="xai" checked />
+          <label for="prov-xai">xAI (grok-4.6, <code>store=false</code>)</label>
+        </div>
+        <div class="radio-row">
+          <input id="prov-gemini" name="provider" type="radio" value="gemini" />
+          <label for="prov-gemini">Google Gemini (key-tier retention)</label>
+        </div>
+      </fieldset>
+      <p id="propose-gemini-warn" class="notice hidden">Gemini has no per-request <code>store=false</code>. Free-tier keys may be used to improve Google products — use a billing-enabled key for real photos.</p>
+      <div class="field-grid">
+        <div class="field">
+          <label for="propose-limit">Max photos (optional)</label>
+          <input id="propose-limit" name="limit" type="number" min="1" placeholder="All pending" />
+        </div>
+        <div class="field">
+          <label for="propose-max-cost">Max est. USD (optional)</label>
+          <input id="propose-max-cost" name="max_cost" type="number" min="0.01" step="0.01" placeholder="No cap" />
+        </div>
+      </div>
+      <div class="checks-stack">
+        <div class="field-check">
+          <input id="propose-dry-run" name="dry_run" type="checkbox" />
+          <label for="propose-dry-run">Dry run (plan only, no vision API spend)</label>
+        </div>
+        <div class="field-check">
+          <input id="propose-force" name="force" type="checkbox" />
+          <label for="propose-force">Re-propose photos that already have a proposal</label>
+        </div>
+        <div class="field-check">
+          <input id="propose-no-context" name="no_context" type="checkbox" />
+          <label for="propose-no-context">Pixels only (strip hint, folder, filename, siblings)</label>
+        </div>
+      </div>
+      <p id="propose-error" class="form-error hidden" aria-live="polite"></p>
+      <menu>
+        <button type="button" id="btn-propose-cancel">Cancel</button>
+        <button type="submit" class="primary" id="btn-propose-submit">Run Propose</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="apply-dialog-gps" aria-labelledby="apply-gps-title" class="desktop-only">
+    <form id="apply-gps-form">
+      <h2 id="apply-gps-title">Write GPS to Accepted Photos</h2>
+      <p id="apply-gps-summary"></p>
+      <div class="field">
+        <label for="apply-gps-out">Output folder (leave blank for job copies/)</label>
+        <div class="input-row">
+          <input id="apply-gps-out" name="out" type="text" spellcheck="false" autocorrect="off" autocapitalize="none" placeholder="Default: ~/.gpsify/jobs/<id>/copies/" />
+          <button type="button" id="btn-apply-gps-browse">Choose…</button>
+        </div>
+      </div>
+      <div class="field-check">
+        <input id="apply-gps-in-place" name="in_place" type="checkbox" />
+        <label for="apply-gps-in-place">Modify original files in place (takes undo backup; RAW gets sibling .xmp only)</label>
+      </div>
+      <p id="apply-gps-inplace-warn" class="notice editing hidden">In-place writes mutate original files directly. You can revert them afterward with Undo.</p>
+      <p id="apply-gps-result" class="notice hidden"></p>
+      <p id="apply-gps-error" class="form-error hidden" aria-live="polite"></p>
+      <menu>
+        <button type="button" id="btn-apply-gps-cancel" autofocus>Cancel</button>
+        <button type="button" id="btn-apply-gps-dry">Dry Run</button>
+        <button type="submit" class="primary" id="btn-apply-gps-submit">Write GPS</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="undo-dialog" aria-labelledby="undo-title" class="desktop-only">
+    <form id="undo-form">
+      <h2 id="undo-title">Undo Written GPS Tags</h2>
+      <p id="undo-body">Restores pre-write backups for JPEG/HEIC/PNG and removes/restores RAW .xmp sidecars, preserving any file modified after write.</p>
+      <p id="undo-error" class="form-error hidden" aria-live="polite"></p>
+      <menu>
+        <button type="button" id="btn-undo-cancel" autofocus>Cancel</button>
+        <button type="submit" class="danger" id="btn-undo-submit">Restore Backups</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="doctor-dialog" closedby="any" aria-labelledby="doctor-title" class="desktop-only">
+    <form method="dialog">
+      <h2 id="doctor-title">Environment &amp; Album Status</h2>
+      <dl id="doctor-dl" class="doctor-dl"></dl>
+      <dl id="job-stats-dl" class="doctor-dl"></dl>
+      <p id="doctor-msg" class="notice hidden" aria-live="polite"></p>
+      <menu>
+        <button type="button" id="btn-skip-low">Skip Low (&lt; 0.55)</button>
+        <button type="button" id="btn-clean-cache">Clean Previews &amp; Thumbs</button>
+        <button type="submit" value="close" class="primary" autofocus>Close</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <script src="./vendor/leaflet.js"></script>
+  <script type="module" src="./app.js"></script>
 </body>
 </html>

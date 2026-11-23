@@ -6,7 +6,7 @@
 
 Visual geolocation of untagged photos. gpsify proposes a location from pixels, shows its work, and writes GPS **only after a human accepts**.
 
-This repository is a macOS-first, local-first CLI plus a localhost review UI. The safety rails it will not cross — and the frozen SQLite schema behind them — are in [`docs/decisions.md`](docs/decisions.md).
+This repository is a macOS-first, local-first Cargo workspace offering both a native **Tauri v2 desktop app** (`gpsify-desktop`) and a CLI (`gpsify`), sharing one Rust core and frozen SQLite Schema v1 (`~/.gpsify`). The safety rails it will not cross are in [`docs/decisions.md`](docs/decisions.md).
 
 ![The gpsify review grid](docs/images/review-grid.png)
 
@@ -65,19 +65,19 @@ checkpointed immediately after each successful vision response, before geocoding
 
 Run `gpsify doctor` to check ExifTool, HEIC preview support, the selected provider's API key, and geocoder configuration. It makes no network calls and never prints credentials. Exit code 1 means a capability or configuration is missing.
 
-## Install
+## Install & Launch
 
 ```bash
 brew install exiftool
-cargo install --path .
-gpsify --help
+cargo build --workspace --release
 ```
 
-On macOS (`darwin`), HEIC, JPEG, and PNG preview decode/resize uses Apple's native `CoreFoundation` + `ImageIO` frameworks with no extra native image dependencies. On Linux, build with `--features heic` (requires `libheif`) if you need HEIC preview decoding:
+That produces both binaries under `target/release/`:
 
-```bash
-cargo install --path . --features heic
-```
+- **Native macOS desktop app (Tauri v2):** `./target/release/gpsify-desktop` (or `cargo run --release -p gpsify-desktop`) — full GUI for picking folders, scanning/clustering, running `propose` / `geocode`, reviewing thumbnails & map pins, and running `apply` / `undo` with no browser tab or open HTTP port.
+- **CLI:** `./target/release/gpsify --help` (or `cargo install --path .` to add `gpsify` and `bakeoff` to `PATH`).
+
+On macOS (`darwin`), HEIC, JPEG, and PNG preview decode/resize uses Apple's native `CoreFoundation` + `ImageIO` frameworks with no extra native image dependencies. On Linux, build with `--features heic` (requires `libheif`) for HEIC decode, and ensure `libwebkit2gtk-4.1-dev` / `libgtk-3-dev` are present for the desktop crate.
 
 ## Quickstart
 
@@ -314,12 +314,12 @@ instance; a self-hosted Nominatim switches the cap off entirely.
 
 ## Tests
 
-**GitHub Actions is the source of truth** for CI. The workflow runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --locked` (with `GPSIFY_DRY_RUN=1`), and `cargo build --release --locked`. The Ubuntu job tests core build and fallback paths (`libimage-exiftool-perl`). The macOS job installs ExifTool and runs the full suite including Apple ImageIO HEIC decode and headless Chrome E2E tests. No live AI or geocoder calls occur; write and HTTP tests use temporary photos and local `wiremock` servers.
+**GitHub Actions is the source of truth** for CI. The workflow runs `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --locked` (with `GPSIFY_DRY_RUN=1`), and `cargo build --workspace --release --locked`. The Ubuntu job tests core + desktop compilation (`libimage-exiftool-perl`, WebKitGTK). The macOS job installs ExifTool and runs the full suite including Apple ImageIO HEIC decode, Tauri backend IPC tests, and headless Chrome E2E tests. No live AI or geocoder calls occur; write and HTTP tests use temporary photos and local `wiremock` servers.
 
 Locally:
 
 ```bash
-cargo test
+cargo test --workspace
 ```
 
 Headless Chrome browser E2E tests run the real Axum review server on loopback with generated photos:

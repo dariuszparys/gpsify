@@ -4,7 +4,7 @@ This file provides guidance to coding agents working in this repository.
 
 ## What this is
 
-`gpsify` proposes GPS coordinates for untagged photos from their pixels and writes tags **only after a human accepts**. macOS-first, local-first: a single-binary Rust CLI (`clap`, `tokio`, `rusqlite`) plus a loopback-only Axum review UI with embedded static Leaflet assets (`rust-embed`).
+`gpsify` proposes GPS coordinates for untagged photos from their pixels and writes tags **only after a human accepts**. macOS-first, local-first: a Cargo workspace containing the core `gpsify` CLI (`clap`, `tokio`, `rusqlite`) plus loopback-only Axum fallback review UI, AND `gpsify-desktop` (`src-tauri/`, Tauri v2 `WKWebView` native macOS app sharing the exact same Rust core and vendored Leaflet assets under `static/`).
 
 [`docs/decisions.md`](docs/decisions.md) is not background reading. It carries the numbered decisions (K1–K18) that the invariants below cite by number, plus the complete SQLite schema. A behavior change that touches a K-decision belongs in that file too.
 
@@ -14,15 +14,16 @@ This file provides guidance to coding agents working in this repository.
 `gpsify doctor` checks dependencies and configuration without network calls.
 
 ```bash
-cargo build --release                      # builds target/release/gpsify and bakeoff
-cargo run -- --help                        # run CLI from source
+cargo run -p gpsify-desktop                          # launch native Tauri desktop app
+cargo run -- --help                                  # run CLI from source
+cargo build --workspace --release                    # builds target/release/gpsify, bakeoff, gpsify-desktop
 
-cargo fmt --check                          # formatting gate
-cargo clippy --all-targets -- -D warnings  # lint gate (zero warnings)
-cargo test                                 # unit, integration, exiftool, wiremock, and headless Chrome tests
+cargo fmt --check                                    # formatting gate
+cargo clippy --workspace --all-targets -- -D warnings # lint gate (zero warnings)
+cargo test --workspace                               # unit, integration, exiftool, wiremock, Tauri IPC, headless Chrome
 ```
 
-`.github/workflows/ci.yml` is the source of truth and runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --locked` (with `GPSIFY_DRY_RUN=1` in the workflow environment; headless Chrome tests run on `macos-latest`), and `cargo build --release --locked`.
+`.github/workflows/ci.yml` is the source of truth and runs `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --locked` (with `GPSIFY_DRY_RUN=1` in the workflow environment; headless Chrome tests run on `macos-latest`), and `cargo build --workspace --release --locked`.
 
 Dependencies are managed in `Cargo.toml` and pinned in `Cargo.lock`. On non-macOS hosts, optional HEIC decode is gated behind `--features heic` (`libheif-rs`); on macOS, native `CoreFoundation` + `ImageIO` frameworks handle oriented HEIC/JPEG/PNG decode and resize with zero third-party native image libraries.
 
@@ -78,7 +79,7 @@ These are safety rails, each traceable to a K-decision in `docs/decisions.md`. B
 - **`photo.sha256` is always the ingest (pre-tag) hash.** Post-write identity lives on `write_receipt.written_sha256`. Dest inspection runs *before* any ingest-hash abort so `--in-place` retries don't wrongly report `source_changed`.
 - **Schema v1 is complete and frozen** (`PRAGMA user_version=1`). Do not add columns; additive migrations only after v1. Never rewrite a proposal's `raw_json` — append a row and flip `current`.
 - **Ingest never writes `previews/` or `thumbs/`.** They are built just-in-time by `propose` and the review UI.
-- **The review UI binds `127.0.0.1` only** (K16). Thumbs are served by `photo_id` UUID; originals are never mounted. Assets under `static/` are embedded cleanly via `rust-embed` with vendored Leaflet (`static/vendor/`) and zero remote CDN references (`static_assets_are_local_only`).
+- **Desktop app & review transport boundary** (K16). `gpsify-desktop` uses Tauri IPC (`src-tauri/src/commands.rs` delegating directly to shared helpers in `src/review/routes.rs`) and serves thumbnails/previews strictly by active `job_id` + `photo_id` UUID over `gpsify://` with no open TCP listener. The CLI `review` command binds `127.0.0.1` only. Assets under `static/` work identically in both modes (`./vendor/` relative paths, vendored Leaflet, zero remote CDN references per `static_assets_are_local_only`).
 - **Copying one pin onto many photos is capped; accepting many photos is not** (K9, K18). `POST /api/pin/apply` and `POST /api/clusters/{id}/apply` share server-side candidate & batch-confirmation checks (`>30`, all undated, or `>25%` untimestamped). Both write `DecisionAction::ClusterApply` (`cluster_apply`).
 - **No `input` listener in `static/*.js`, and no `.oninput`.** `static_search_is_enter_only` scans every first-party JS module and requires Enter-only search (`event.key !== "Enter"` in `static/app.js`, K10).
 - **Geocoding respects the OSMF policy** (K10): primary place name only, submit-on-Enter, ≤1 rps, identifiable User-Agent, normalized SQLite cache, and a 50-uncached-per-run cap on public Nominatim. Never geocode a `privacy_sensitive`/`policy_refusal` result or a house-address-shaped string.

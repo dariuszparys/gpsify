@@ -325,6 +325,10 @@ impl GeocodeService {
         &self.lang
     }
 
+    pub fn geocoder_name(&self) -> &str {
+        self.geocoder.name()
+    }
+
     pub async fn lookup_primary(
         &self,
         place: &str,
