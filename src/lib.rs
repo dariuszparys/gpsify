@@ -9,6 +9,9 @@ pub mod ingest;
 pub mod media;
 #[cfg(target_os = "macos")]
 pub mod media_macos;
+pub mod propose;
+pub mod providers;
+pub mod reconcile;
 pub mod review;
 pub mod status;
 pub mod store;
