@@ -47,7 +47,8 @@ def review(tmp_path):
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
-    server = uvicorn.Server(uvicorn.Config(create_app(settings=settings, job_id=job_id), log_level="error"))
+    app = create_app(settings=settings, job_id=job_id)
+    server = uvicorn.Server(uvicorn.Config(app, log_level="error"))
     thread = threading.Thread(target=lambda: server.run(sockets=[sock]), daemon=True)
     thread.start()
     try:
@@ -61,7 +62,7 @@ def review(tmp_path):
             page = browser.new_page(viewport={"width": 1440, "height": 1000})
             page.route("**/*", lambda route: route.continue_() if route.request.url.startswith(f"http://127.0.0.1:{port}/") else route.abort())
             page.route("**/tiles/**", lambda route: route.fulfill(status=204))
-            page.goto(f"http://127.0.0.1:{port}/")
+            page.goto(f"http://127.0.0.1:{port}/?token={app.state.auth_token}")
             expect(page.locator(".tile")).to_have_count(3)
             yield page
             browser.close()

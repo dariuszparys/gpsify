@@ -16,19 +16,23 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 from functools import partial
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from enum import Enum
 from pathlib import Path
 from typing import Any, Never
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, ValidationError
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, Response
+from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from gpsify.config import Settings
 from gpsify.exif import classify_media
@@ -51,11 +55,149 @@ from gpsify.types import (
 )
 
 REVIEW_HOST = "127.0.0.1"
+SESSION_COOKIE = "gpsify_session"
+TOKEN_HEADER = "x-gpsify-token"
+TOKEN_QUERY = "token"
+_LOOPBACK_HOSTNAMES = frozenset({"127.0.0.1", "localhost", "[::1]"})
 LOW_UI_RANK = 0.55
 GEOCODE_MIN_Q_LEN = 3
 CLUSTER_N_CAP = 30
 CLUSTER_UNSTAMPED_FRACTION = 0.25
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+def _is_loopback_host(raw: str) -> bool:
+    """True only for loopback host[:port] values (prevents DNS rebinding)."""
+    host = raw.strip().lower()
+    if not host or any(ch.isspace() for ch in host):
+        return False
+    if host.startswith("["):
+        end = host.find("]")
+        if end < 0:
+            return False
+        hostname = host[: end + 1]
+        rest = host[end + 1 :]
+        if rest:
+            if not rest.startswith(":"):
+                return False
+            port_str = rest[1:]
+            if not port_str.isdigit() or not (1 <= int(port_str) <= 65535):
+                return False
+    elif ":" in host:
+        hostname, port_str = host.rsplit(":", 1)
+        if not port_str.isdigit() or not (1 <= int(port_str) <= 65535):
+            return False
+    else:
+        hostname = host
+    return hostname in _LOOPBACK_HOSTNAMES
+
+
+def _origin_matches_host(origin: str, host_header: str) -> bool:
+    parsed = urlparse(origin.strip())
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    if not _is_loopback_host(parsed.netloc):
+        return False
+    return parsed.netloc.lower() == host_header.strip().lower()
+
+
+class _LoopbackSecurityMiddleware:
+    """Enforce loopback Host, per-launch token, CSRF, and JSON Content-Type."""
+
+    def __init__(self, app: ASGIApp, *, auth_token: str) -> None:
+        self.app = app
+        self.auth_token = auth_token
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        scope_type = scope["type"]
+        if scope_type == "websocket":
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        if scope_type != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive)
+        host_header = request.headers.get("host", "")
+        if not _is_loopback_host(host_header):
+            response = _error("invalid host header", 400)
+            await response(scope, receive, send)
+            return
+
+        method = request.method.upper()
+        if method not in {"GET", "HEAD", "OPTIONS"}:
+            sec_fetch_site = request.headers.get("sec-fetch-site")
+            if sec_fetch_site is not None:
+                if sec_fetch_site.strip().lower() not in {"same-origin", "none"}:
+                    response = _error("cross-origin request blocked", 403)
+                    await response(scope, receive, send)
+                    return
+            origin = request.headers.get("origin")
+            if origin is not None:
+                if not _origin_matches_host(origin, host_header):
+                    response = _error("cross-origin request blocked", 403)
+                    await response(scope, receive, send)
+                    return
+
+        cookie_token = request.cookies.get(SESSION_COOKIE)
+        header_token = request.headers.get(TOKEN_HEADER)
+        has_session = (
+            cookie_token is not None
+            and secrets.compare_digest(cookie_token, self.auth_token)
+        ) or (
+            header_token is not None
+            and secrets.compare_digest(header_token, self.auth_token)
+        )
+
+        path = request.url.path
+        if path == "/" and method in {"GET", "HEAD"} and TOKEN_QUERY in request.query_params:
+            query_token = request.query_params.get(TOKEN_QUERY, "")
+            if not secrets.compare_digest(query_token, self.auth_token):
+                response = _error("unauthorized", 401)
+                await response(scope, receive, send)
+                return
+            redirect = RedirectResponse(url="/", status_code=303)
+            redirect.set_cookie(
+                SESSION_COOKIE,
+                self.auth_token,
+                httponly=True,
+                samesite="strict",
+                path="/",
+            )
+            redirect.headers["Cache-Control"] = "no-store"
+            await redirect(scope, receive, send)
+            return
+
+        if not has_session:
+            response = _error("unauthorized", 401)
+            await response(scope, receive, send)
+            return
+
+        if path.startswith("/api/") and method == "POST":
+            content_type = (
+                request.headers.get("content-type", "")
+                .partition(";")[0]
+                .strip()
+                .lower()
+            )
+            if content_type != "application/json":
+                response = _error("Content-Type must be application/json", 415)
+                await response(scope, receive, send)
+                return
+
+        if path == "/" or path.startswith("/api/"):
+            async def send_with_no_store(message: Message) -> None:
+                if message["type"] == "http.response.start":
+                    headers = list(message.get("headers", []))
+                    if not any(name.lower() == b"cache-control" for name, _ in headers):
+                        headers.append((b"cache-control", b"no-store"))
+                        message = {**message, "headers": headers}
+                await send(message)
+
+            await self.app(scope, receive, send_with_no_store)
+            return
+
+        await self.app(scope, receive, send)
 
 
 class ReviewError(Exception):
@@ -608,6 +750,7 @@ def create_app(
     repo: JobRepo | None = None,
     service: GeocodeService | None = None,
     job_root: Path | None = None,
+    auth_token: str | None = None,
 ) -> Starlette:
     """Build the review app. Tests inject ``repo`` / ``service``; CLI uses lifespan."""
 
@@ -669,7 +812,13 @@ def create_app(
         Route("/api/geocode", api_geocode, methods=["POST"]),
         Mount("/static", StaticFiles(directory=STATIC_DIR), name="static"),
     ]
-    app = Starlette(routes=routes, lifespan=lifespan)
+    token = auth_token if auth_token else secrets.token_urlsafe(32)
+    app = Starlette(
+        routes=routes,
+        lifespan=lifespan,
+        middleware=[Middleware(_LoopbackSecurityMiddleware, auth_token=token)],
+    )
+    app.state.auth_token = token
     app.state.media_slots = asyncio.Semaphore(2)
     app.state.settings = settings
     app.state.job_id = job_id

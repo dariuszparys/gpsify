@@ -88,7 +88,7 @@ def _serve_review_ui(settings: object, job_id: str, port: int) -> None:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
     starlette_app = create_app(settings=settings, job_id=job_id)
-    url = f"http://{REVIEW_HOST}:{port}"
+    url = f"http://{REVIEW_HOST}:{port}/?token={starlette_app.state.auth_token}"
     typer.echo(f"{url}  (loopback only; no LAN bind)")
     webbrowser.open(url)
     serve_review(starlette_app, port)

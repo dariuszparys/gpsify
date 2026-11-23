@@ -177,7 +177,11 @@ async def _client_for(
         job_root=job_dir(data_dir, JOB_ID),
     )
     transport = ASGITransport(app=app)
-    client = AsyncClient(transport=transport, base_url="http://127.0.0.1")
+    client = AsyncClient(
+        transport=transport,
+        base_url="http://127.0.0.1",
+        cookies={"gpsify_session": app.state.auth_token},
+    )
     return client, geocoder, cache, app
 
 
@@ -599,18 +603,93 @@ def test_lazy_thumb_by_photo_id(data_dir: Path, tmp_path: Path) -> None:
 
 
 def test_index_and_no_cors_wildcard(data_dir: Path) -> None:
+    from starlette.middleware.cors import CORSMiddleware
+
     async def body() -> None:
         repo = await _create_repo(data_dir)
         async with repo:
             client, _fake, cache, app = await _client_for(data_dir, repo)
             try:
-                assert app.user_middleware == []
+                assert all(m.cls is not CORSMiddleware for m in app.user_middleware)
                 async with client:
                     page = await client.get("/")
                     assert page.status_code == 200
+                    assert "access-control-allow-origin" not in page.headers
                     assert "© OpenStreetMap contributors" in page.text
                     js = await client.get("/static/app.js")
                     assert js.status_code == 200
+            finally:
+                await cache.close()
+
+    run(body())
+
+
+def test_review_security_host_token_and_csrf(data_dir: Path) -> None:
+    async def body() -> None:
+        repo = await _create_repo(data_dir)
+        async with repo:
+            photo_id = await _add_photo(repo, suffix="sec")
+            await _proposal(repo, photo_id)
+            fake = FakeGeocoder()
+            fake.add("Porto", _porto_hit("Porto"))
+            _authed, _geocoder, cache, app = await _client_for(data_dir, repo, fake=fake)
+            await _authed.aclose()
+            transport = ASGITransport(app=app)
+            token = app.state.auth_token
+            try:
+                async with AsyncClient(transport=transport, base_url="http://127.0.0.1") as bare:
+                    # 1. Unauthenticated requests are rejected.
+                    assert (await bare.get("/")).status_code == 401
+                    assert (await bare.get("/api/job")).status_code == 401
+                    assert (await bare.get("/api/photos")).status_code == 401
+                    assert (
+                        await bare.post("/api/decisions", json={"action": "accept", "photo_ids": [photo_id]})
+                    ).status_code == 401
+
+                    # 2. Wrong bootstrap token rejected; valid token sets HttpOnly SameSite=strict cookie and redirects to /.
+                    assert (await bare.get("/?token=wrong", follow_redirects=False)).status_code == 401
+                    boot = await bare.get(f"/?token={token}", follow_redirects=False)
+                    assert boot.status_code == 303
+                    assert boot.headers["location"] == "/"
+                    set_cookie = boot.headers["set-cookie"]
+                    assert "httponly" in set_cookie.lower()
+                    assert "samesite=strict" in set_cookie.lower()
+                    assert (await bare.get("/api/job")).status_code == 200
+
+                    # 3. DNS-rebound Host header rejected even with valid session cookie.
+                    rebound = await bare.get("/api/job", headers={"Host": "evil.example:8765"})
+                    assert rebound.status_code == 400
+
+                    # 4. Simple POST without application/json rejected (415).
+                    plain_post = await bare.post(
+                        "/api/geocode",
+                        content='{"q": "Porto"}',
+                        headers={"Content-Type": "text/plain"},
+                    )
+                    assert plain_post.status_code == 415
+
+                    # 5. Cross-origin / cross-site POST rejected (403).
+                    bad_origin = await bare.post(
+                        "/api/decisions",
+                        json={"action": "accept", "photo_ids": [photo_id]},
+                        headers={"Origin": "https://evil.example"},
+                    )
+                    assert bad_origin.status_code == 403
+                    other_port = await bare.post(
+                        "/api/decisions",
+                        json={"action": "accept", "photo_ids": [photo_id]},
+                        headers={"Origin": "http://127.0.0.1:9999"},
+                    )
+                    assert other_port.status_code == 403
+                    cross_site = await bare.post(
+                        "/api/decisions",
+                        json={"action": "accept", "photo_ids": [photo_id]},
+                        headers={"Sec-Fetch-Site": "cross-site"},
+                    )
+                    assert cross_site.status_code == 403
+
+                    # Confirm none of the rejected POSTs mutated the decision.
+                    assert await repo.get_current_decision(photo_id) is None
             finally:
                 await cache.close()
 
