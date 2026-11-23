@@ -24,6 +24,8 @@ from gpsify.exif import (
     classify_media,
     dest_gps_matches,
     exiftool_available,
+    has_unsafe_path_chars,
+    is_photos_library,
     render_exiftool_argfile,
     write_gps_batch,
 )
@@ -39,6 +41,7 @@ SOURCE_MISSING = "source_missing"
 SOURCE_CHANGED = "source_changed"
 DEST_DIVERGED = "dest_diverged"
 NULL_COORDS = "decision_coords_missing"
+UNSAFE_PATH = "unsafe_path"
 
 
 class ApplyError(Exception):
@@ -111,8 +114,6 @@ def resolve_dests(
     """Return ``(receipt_dest, image_dest)``. RAW receipt dest is the sidecar."""
     source = Path(str(photo["path"]))
     rel = Path(str(photo["relpath"]))
-    if rel.is_absolute():
-        rel = Path(rel.name)
     match kind:
         case MediaKind.jpeg | MediaKind.png | MediaKind.heic:
             image = source if in_place else dest_root / rel
@@ -125,6 +126,49 @@ def resolve_dests(
             return image, image
         case _:
             _unreachable(kind)
+
+
+def _validate_apply_paths(
+    photo: dict[str, Any],
+    *,
+    job_root_canonical: Path,
+    dest_root: Path,
+    dest: Path,
+    image_dest: Path,
+    in_place: bool,
+) -> str | None:
+    source_raw = str(photo["path"])
+    rel_raw = str(photo["relpath"])
+    if not rel_raw or has_unsafe_path_chars(rel_raw) or has_unsafe_path_chars(source_raw):
+        return UNSAFE_PATH
+    rel = Path(rel_raw)
+    if rel.is_absolute() or ".." in rel.parts:
+        return UNSAFE_PATH
+    source = Path(source_raw)
+    if (
+        source.is_symlink()
+        or is_photos_library(source)
+        or dest.is_symlink()
+        or image_dest.is_symlink()
+        or is_photos_library(dest)
+        or is_photos_library(image_dest)
+    ):
+        return UNSAFE_PATH
+    if str(dest) != str(dest).strip():
+        return UNSAFE_PATH
+    if in_place:
+        root_resolved = job_root_canonical.resolve(strict=False)
+        if not source.resolve(strict=False).is_relative_to(root_resolved):
+            return UNSAFE_PATH
+        if not dest.resolve(strict=False).is_relative_to(root_resolved):
+            return UNSAFE_PATH
+    else:
+        dest_root_resolved = dest_root.resolve(strict=False)
+        if not dest.resolve(strict=False).is_relative_to(dest_root_resolved):
+            return UNSAFE_PATH
+        if not image_dest.resolve(strict=False).is_relative_to(dest_root_resolved):
+            return UNSAFE_PATH
+    return None
 
 
 def _safe_hash(path: Path) -> str | None:
@@ -150,11 +194,15 @@ async def run_apply(
 ) -> ApplySummary:
     if out is not None and in_place:
         raise ApplyError("--out and --in-place are mutually exclusive")
+    if out is not None and (has_unsafe_path_chars(out) or str(out) != str(out).strip()):
+        raise ApplyError("--out path contains unsupported control or leading/trailing whitespace characters")
     if in_place and not dry_run and not i_mean_it:
         raise ApplyError("--in-place requires --i-mean-it or an interactive confirm")
 
     root = job_dir(data_dir, job_id)
     dest_root = Path(out).expanduser().resolve() if out is not None else copies_root(data_dir, job_id)
+    if out is not None and is_photos_library(dest_root):
+        raise ApplyError("refusing to write into a Photos.app library bundle (*.photoslibrary)")
     summary = ApplySummary(job_id=job_id, dest_root=str(dest_root), in_place=in_place, dry_run=dry_run)
 
     lock = JobExclusiveLock(root / LOCK_FILENAME)
@@ -174,6 +222,7 @@ async def run_apply(
             raise ApplyError(f"job row missing for {job_id}")
         if in_place:
             summary.dest_root = str(job["root_path"])
+        job_root_canonical = Path(str(job["root_canonical"]))
 
         photos = await repo.list_photos()
         decisions = {row["photo_id"]: row for row in await repo.list_current_decisions()}
@@ -189,6 +238,8 @@ async def run_apply(
                 photo=photo,
                 decision=decision,
                 kind=kind,
+                job_root_canonical=job_root_canonical,
+                dest_root=dest_root,
                 dest=dest,
                 image_dest=image_dest,
                 data_dir=data_dir,
@@ -294,6 +345,8 @@ async def _inspect_one(
     photo: dict[str, Any],
     decision: dict[str, Any] | None,
     kind: MediaKind,
+    job_root_canonical: Path,
+    dest_root: Path,
     dest: Path,
     image_dest: Path,
     data_dir: Path,
@@ -337,6 +390,26 @@ async def _inspect_one(
                 error="unsupported_media",
             )
         return "unsupported_media"
+
+    path_error = _validate_apply_paths(
+        photo,
+        job_root_canonical=job_root_canonical,
+        dest_root=dest_root,
+        dest=dest,
+        image_dest=image_dest,
+        in_place=in_place,
+    )
+    if path_error is not None:
+        if not dry_run:
+            await _fail_receipt(
+                repo,
+                photo=photo,
+                decision=decision,
+                dest=dest,
+                in_place=in_place,
+                error=path_error,
+            )
+        return path_error
 
     existing = await repo.get_write_receipt(photo["id"], str(dest))
     backup_existing = existing["backup_path"] if existing is not None else None

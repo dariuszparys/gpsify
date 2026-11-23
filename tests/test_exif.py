@@ -10,10 +10,12 @@ from gpsify.exif import (
     EXIFTOOL_CHUNK_SIZE,
     EXIFTOOL_READ_ARGS,
     MISSING_EXIFTOOL_WARNING,
+    ExifWriteError,
     GpsWrite,
     MediaKind,
     classify_media,
     dest_gps_matches,
+    exiftool_available,
     read_exif_batch,
     render_exiftool_argfile,
     write_gps_batch,
@@ -173,3 +175,55 @@ def test_write_argfile_uses_execute_and_n(tmp_path: Path) -> None:
     assert "GPSLatitude=1" in body
     assert "XMP:GPSLatitude=3" in body
     assert "GPSVersionID" not in body.split("-execute", 1)[1]
+
+
+def test_argfile_rejects_newlines_control_chars_and_anchors_relative_paths() -> None:
+    for bad_dest in (
+        Path("bad\n-config\nevil.pl"),
+        Path("bad\r-execute"),
+        Path("bad\x00.jpg"),
+        Path(" leading.jpg"),
+        Path("trailing.jpg "),
+    ):
+        with pytest.raises(ExifWriteError, match="unsafe"):
+            render_exiftool_argfile(
+                [GpsWrite(dest=bad_dest, lat=1.0, lng=2.0, kind=MediaKind.jpeg, job_id="j", decision_id="d")]
+            )
+
+    with pytest.raises(ExifWriteError, match="unsafe"):
+        render_exiftool_argfile(
+            [GpsWrite(dest=Path("/tmp/ok.jpg"), lat=1.0, lng=2.0, kind=MediaKind.jpeg, job_id="j\n-config", decision_id="d")]
+        )
+    with pytest.raises(ExifWriteError, match="unsafe"):
+        render_exiftool_argfile(
+            [GpsWrite(dest=Path("/tmp/ok.jpg"), lat=1.0, lng=2.0, kind=MediaKind.jpeg, job_id="j", decision_id="d\r")]
+        )
+
+    body = render_exiftool_argfile(
+        [
+            GpsWrite(dest=Path("-dash.jpg"), lat=1.0, lng=2.0, kind=MediaKind.jpeg, job_id="j", decision_id="d1"),
+            GpsWrite(dest=Path("#comment.jpg"), lat=3.0, lng=4.0, kind=MediaKind.jpeg, job_id="j", decision_id="d2"),
+        ]
+    )
+    lines = body.splitlines()
+    assert "./-dash.jpg" in lines
+    assert "./#comment.jpg" in lines
+    assert "-charset" in lines and "filename=utf8" in lines
+    assert "--" not in lines
+
+
+@pytest.mark.writes_exif
+def test_exiftool_argfile_write_roundtrip(tmp_path: Path) -> None:
+    if not exiftool_available():
+        pytest.skip("requires exiftool")
+    first = write_test_jpeg(tmp_path / "-leading-dash.jpg")
+    second = write_test_jpeg(tmp_path / "#leading-hash.jpg")
+    errors = write_gps_batch(
+        [
+            GpsWrite(dest=first, lat=PORTO_LAT, lng=PORTO_LNG, kind=MediaKind.jpeg, job_id="job", decision_id="d1"),
+            GpsWrite(dest=second, lat=48.8584, lng=2.2945, kind=MediaKind.jpeg, job_id="job", decision_id="d2"),
+        ]
+    )
+    assert errors == {str(first): None, str(second): None}
+    assert dest_gps_matches(first, PORTO_LAT, PORTO_LNG)
+    assert dest_gps_matches(second, 48.8584, 2.2945)

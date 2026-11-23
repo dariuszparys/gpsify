@@ -31,8 +31,11 @@ from gpsify.exif import (
     ExifRead,
     MediaKind,
     XMP_EXTS,
+    _is_photos_library_name,
     classify_media,
     exiftool_available,
+    has_unsafe_path_chars,
+    is_photos_library,
     is_processable,
     read_exif_batch,
 )
@@ -82,13 +85,6 @@ class _DiskFile:
     size: int
     mtime_ns: int
     unreadable: bool = False
-
-
-def is_photos_library(path: Path) -> bool:
-    """True if ``path`` is or sits inside a ``*.photoslibrary`` bundle (K14)."""
-    resolved = path.resolve()
-    candidates = (resolved, *resolved.parents)
-    return any(_is_photos_library_name(part.name) for part in candidates)
 
 
 async def run_ingest(
@@ -264,9 +260,26 @@ def _walk_and_hash(root: Path, *, recursive: bool) -> list[_DiskFile]:
     for path in _iter_files(root, recursive=recursive):
         kind = classify_media(path)
         relpath = path.relative_to(root).as_posix()
+        if has_unsafe_path_chars(path) or has_unsafe_path_chars(relpath):
+            files.append(
+                _DiskFile(
+                    path=path,
+                    path_str=str(path),
+                    relpath=relpath,
+                    kind=kind,
+                    sha256="",
+                    size=0,
+                    mtime_ns=0,
+                    unreadable=True,
+                )
+            )
+            continue
         try:
-            stat = path.stat()
-            digest = _sha256_file(path)
+            resolved = path.resolve(strict=True)
+            if not resolved.is_relative_to(root) or is_photos_library(resolved):
+                raise OSError("path escapes root or enters Photos library")
+            stat = resolved.stat()
+            digest = _sha256_file(resolved)
         except OSError:
             files.append(
                 _DiskFile(
@@ -283,8 +296,8 @@ def _walk_and_hash(root: Path, *, recursive: bool) -> list[_DiskFile]:
             continue
         files.append(
             _DiskFile(
-                path=path,
-                path_str=str(path),
+                path=resolved,
+                path_str=str(resolved),
                 relpath=relpath,
                 kind=kind,
                 sha256=digest,
@@ -302,17 +315,19 @@ def _iter_files(root: Path, *, recursive: bool) -> list[Path]:
             dirnames[:] = [
                 name
                 for name in dirnames
-                if name != ".gpsify" and not _is_photos_library_name(name)
+                if name != ".gpsify"
+                and not _is_photos_library_name(name)
+                and not (Path(dirpath) / name).is_symlink()
             ]
             for name in filenames:
                 path = Path(dirpath) / name
-                if _ignored(path, root):
+                if path.is_symlink() or _ignored(path, root):
                     continue
                 if path.is_file():
                     found.append(path)
     else:
         for path in root.iterdir():
-            if path.is_file() and not _ignored(path, root):
+            if not path.is_symlink() and path.is_file() and not _ignored(path, root):
                 found.append(path)
     return sorted(found)
 
@@ -347,10 +362,6 @@ def _ignored(path: Path, root: Path) -> bool:
     except ValueError:
         parts = path.parts
     return ".gpsify" in parts
-
-
-def _is_photos_library_name(name: str) -> bool:
-    return name.endswith(".photoslibrary")
 
 
 def _sha256_file(path: Path) -> str:

@@ -12,6 +12,7 @@ from typer.testing import CliRunner
 from gpsify.apply import (
     DEST_DIVERGED,
     SOURCE_CHANGED,
+    UNSAFE_PATH,
     ApplyError,
     copies_root,
     run_apply,
@@ -733,3 +734,80 @@ def test_undo_missing_raw_backup_preserves_sidecar(tmp_path):
                "backup_path": str(tmp_path / "missing.xmp"), "written_sha256": hash_file(sidecar)}
     assert _undo_dest({"relpath": "photo.cr2"}, receipt) == "backup_missing"
     assert sidecar.is_file()
+
+
+def test_apply_rejects_relpath_traversal_and_photoslibrary_out(
+    data_dir: Path, tmp_path: Path
+) -> None:
+    root = tmp_path / "photos"
+    root.mkdir()
+    jpeg = write_test_jpeg(root / "IMG_a.jpg", datetime_original="2019:06:14 18:04:00")
+    escaped = tmp_path / "escaped.jpg"
+
+    async def seed() -> str:
+        repo = await _create_repo(data_dir, root)
+        async with repo:
+            photo_id = await _add_photo(repo, jpeg, relpath="../escaped.jpg")
+            await _proposal(repo, photo_id)
+            await repo.add_decision(photo_id, DecisionAction.accept)
+            return photo_id
+
+    photo_id = run(seed())
+    out_dir = tmp_path / "export"
+    out_dir.mkdir()
+    summary = run(run_apply(JOB_ID, data_dir=data_dir, out=out_dir))
+    assert summary.wrote == 0
+    assert summary.failed == 1
+    assert not escaped.exists()
+
+    async def check_receipt() -> None:
+        async with await JobRepo.open(data_dir, JOB_ID) as repo:
+            photo = await repo.get_photo(photo_id)
+            assert photo is not None
+            assert photo["status"] == PhotoStatus.write_failed.value
+            assert photo["error"] == UNSAFE_PATH
+
+    run(check_receipt())
+
+    bundle_out = tmp_path / "Evil.photoslibrary" / "originals"
+    with pytest.raises(ApplyError, match="photoslibrary"):
+        run(run_apply(JOB_ID, data_dir=data_dir, out=bundle_out))
+
+
+def test_apply_and_undo_refuse_symlinked_targets(
+    data_dir: Path, tmp_path: Path
+) -> None:
+    import os
+    from gpsify.undo import _undo_dest
+
+    root = tmp_path / "photos"
+    root.mkdir()
+    outside = write_test_jpeg(tmp_path / "outside.jpg", datetime_original="2019:06:14 18:04:00")
+    outside_before = outside.read_bytes()
+    link = root / "IMG_link.jpg"
+    os.symlink(outside, link)
+
+    async def seed() -> str:
+        repo = await _create_repo(data_dir, root)
+        async with repo:
+            photo_id = await _add_photo(repo, link, relpath="IMG_link.jpg")
+            await _proposal(repo, photo_id)
+            await repo.add_decision(photo_id, DecisionAction.accept)
+            return photo_id
+
+    run(seed())
+    summary = run(run_apply(JOB_ID, data_dir=data_dir, in_place=True, i_mean_it=True))
+    assert summary.wrote == 0
+    assert summary.failed == 1
+    assert outside.read_bytes() == outside_before
+
+    backup = tmp_path / "backup.bin"
+    backup.write_bytes(b"restored")
+    receipt = {
+        "dest_path": str(link),
+        "in_place": True,
+        "backup_path": str(backup),
+        "written_sha256": hash_file(outside),
+    }
+    assert _undo_dest({"relpath": "IMG_link.jpg", "path": str(link)}, receipt) == UNSAFE_PATH
+    assert outside.read_bytes() == outside_before

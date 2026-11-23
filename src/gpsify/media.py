@@ -23,6 +23,7 @@ from gpsify.exif import (
     MediaKind,
     classify_media,
     exiftool_available,
+    is_photos_library,
 )
 from gpsify.types import PhotoStatus
 
@@ -110,6 +111,11 @@ def render_jpeg(
     expected_sha256: str,
     long_edge: int,
 ) -> bytes:
+    if path.is_symlink() or is_photos_library(path):
+        raise MediaError(
+            "refusing symlink or Photos library source",
+            status=PhotoStatus.error,
+        )
     resolved_kind = kind if kind is not None else classify_media(path)
     image = _open_source(path, resolved_kind)
     try:
@@ -200,6 +206,11 @@ def _ensure_derived(
     kind: MediaKind | None,
     long_edge: int,
 ) -> Path:
+    if source.is_symlink() or is_photos_library(source):
+        raise MediaError(
+            "refusing symlink or Photos library source",
+            status=PhotoStatus.error,
+        )
     if dest.is_file():
         digest = hash_file(source)
         if digest != expected_sha256:
@@ -283,7 +294,7 @@ def _open_raster(path: Path) -> Image.Image:
     try:
         image = Image.open(path)
         image.load()
-    except (OSError, UnidentifiedImageError, ValueError) as exc:
+    except (OSError, UnidentifiedImageError, ValueError, Image.DecompressionBombError) as exc:
         raise MediaError(
             f"unreadable: {exc}",
             status=PhotoStatus.skipped_unreadable,
@@ -295,7 +306,7 @@ def _open_raster_bytes(blob: bytes) -> Image.Image:
     try:
         image = Image.open(io.BytesIO(blob))
         image.load()
-    except (OSError, UnidentifiedImageError, ValueError) as exc:
+    except (OSError, UnidentifiedImageError, ValueError, Image.DecompressionBombError) as exc:
         raise MediaError(
             f"unreadable embedded preview: {exc}",
             status=PhotoStatus.skipped_unreadable,
@@ -308,7 +319,7 @@ def _jpeg_long_edge(blob: bytes) -> int | None:
         with Image.open(io.BytesIO(blob)) as image:
             image.load()
             return max(image.size)
-    except (OSError, UnidentifiedImageError, ValueError):
+    except (OSError, UnidentifiedImageError, ValueError, Image.DecompressionBombError):
         return None
 
 

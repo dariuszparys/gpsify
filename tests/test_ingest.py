@@ -448,3 +448,33 @@ def test_missing_exiftool_refuses_unknown_metadata(tmp_path, monkeypatch, extens
     monkeypatch.setattr("gpsify.ingest.exiftool_available", lambda: False)
     with pytest.raises(IngestError, match="metadata safely"):
         asyncio.run(run_ingest(folder, data_dir=tmp_path / "data"))
+
+
+def test_ingest_skips_symlinked_files_and_photoslibrary_targets(
+    tmp_path: Path, data_dir: Path
+) -> None:
+    album = tmp_path / "album"
+    album.mkdir()
+    real = write_test_jpeg(album / "real.jpg", datetime_original="2019:06:14 18:00:00")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    tagged_external = _copy_fixture("jpeg_with_gps.jpg", outside / "tagged.jpg")
+    bundle = tmp_path / "Library.photoslibrary" / "originals"
+    bundle.mkdir(parents=True)
+    in_bundle = write_test_jpeg(bundle / "secret.jpg")
+
+    os.symlink(tagged_external, album / "link_to_gps.jpg")
+    os.symlink(in_bundle, album / "link_to_library.jpg")
+
+    summary = run(run_ingest(album, recursive=True, data_dir=data_dir))
+    assert summary.total == 1
+    assert summary.untagged == 1
+
+    async def inspect() -> None:
+        async with await JobRepo.open(data_dir, summary.job_id) as repo:
+            photos = await repo.list_photos()
+            assert [p["relpath"] for p in photos] == ["real.jpg"]
+            assert photos[0]["path"] == str(real.resolve())
+
+    run(inspect())

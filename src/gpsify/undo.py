@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Never
 
-from gpsify.exif import MediaKind, classify_media
+from gpsify.exif import MediaKind, classify_media, is_photos_library
 from gpsify.media import hash_file
 from gpsify.propose import LOCK_FILENAME, JobExclusiveLock, ProposeError
 from gpsify.store import JobRepo, StoreError, job_dir
@@ -170,6 +170,10 @@ def _undo_dest(photo: dict[str, Any], receipt: dict[str, Any]) -> str | None:
     kind = classify_media(Path(str(photo["relpath"])))
     backup_raw = receipt.get("backup_path")
     backup = Path(backup_raw) if backup_raw else None
+    if dest.is_symlink() or is_photos_library(dest):
+        return "unsafe_path"
+    if backup is not None and (backup.is_symlink() or is_photos_library(backup)):
+        return "unsafe_path"
     if dest.is_file() and (
         not receipt.get("written_sha256")
         or hash_file(dest) != receipt["written_sha256"]
@@ -177,6 +181,8 @@ def _undo_dest(photo: dict[str, Any], receipt: dict[str, Any]) -> str | None:
         return "dest_diverged"
     if kind is MediaKind.raw and not in_place:
         image_copy = dest.with_suffix(Path(str(photo["path"])).suffix)
+        if image_copy.is_symlink() or is_photos_library(image_copy):
+            return "unsafe_path"
         if image_copy.is_file() and hash_file(image_copy) != photo["sha256"]:
             return "source_copy_diverged"
     if kind is MediaKind.raw and backup is not None and not backup.is_file():

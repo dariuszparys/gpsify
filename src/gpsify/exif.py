@@ -82,6 +82,13 @@ MISSING_EXIFTOOL_WARNING = (
 )
 HEIC_WRITE_REQUIRES_EXIFTOOL = "HEIC write requires exiftool"
 DRY_RUN_BLOCKS_WRITES = "GPSIFY_DRY_RUN=1 blocks exiftool writes"
+UNSAFE_PATH_CHARS = ("\n", "\r", "\x00")
+
+
+def has_unsafe_path_chars(value: Path | str) -> bool:
+    """True when ``value`` contains line breaks or NULs unsafe for argfiles."""
+    text = str(value)
+    return any(ch in text for ch in UNSAFE_PATH_CHARS)
 
 
 class MediaKind(str, Enum):
@@ -160,12 +167,27 @@ def is_processable(kind: MediaKind) -> bool:
             _unreachable(kind)
 
 
+def _is_photos_library_name(name: str) -> bool:
+    return name.endswith(".photoslibrary")
+
+
+def is_photos_library(path: Path) -> bool:
+    """True if ``path`` or its resolved target sits inside a ``*.photoslibrary`` bundle (K14)."""
+    resolved = path.resolve()
+    candidates = (path, *path.parents, resolved, *resolved.parents)
+    return any(_is_photos_library_name(part.name) for part in candidates)
+
+
 def sidecar_xmp_path(path: Path) -> Path | None:
     """Return an existing sibling ``basename.xmp`` (any case), else None."""
     parent = path.parent
     stem = path.stem
     for candidate in (parent / f"{stem}.xmp", parent / f"{stem}.XMP"):
-        if candidate.is_file() and candidate.resolve() != path.resolve():
+        if (
+            not candidate.is_symlink()
+            and candidate.is_file()
+            and candidate.resolve() != path.resolve()
+        ):
             return candidate
     return None
 
@@ -540,10 +562,20 @@ def write_gps_batch(items: Sequence[GpsWrite]) -> dict[str, str | None]:
 
 
 def _argfile_lines(item: GpsWrite) -> list[str]:
+    dest_raw = str(item.dest)
+    if (
+        not dest_raw
+        or has_unsafe_path_chars(dest_raw)
+        or dest_raw != dest_raw.strip()
+        or has_unsafe_path_chars(item.job_id)
+        or has_unsafe_path_chars(item.decision_id)
+    ):
+        raise ExifWriteError("unsafe path or identifier for exiftool argfile")
+    dest_arg = dest_raw if item.dest.is_absolute() else f"./{dest_raw}"
     lat_s = _fmt_coord(item.lat)
     lng_s = _fmt_coord(item.lng)
     instructions = gps_instructions(item.job_id, item.decision_id)
-    lines = ["-n"]
+    lines = ["-charset", "filename=utf8", "-n"]
     match item.kind:
         case MediaKind.jpeg | MediaKind.heic:
             lines.extend(
@@ -559,7 +591,7 @@ def _argfile_lines(item: GpsWrite) -> list[str]:
                     "-XMP-dc:Source=gpsify",
                     f"-XMP-photoshop:Instructions={instructions}",
                     "-overwrite_original",
-                    str(item.dest),
+                    dest_arg,
                 ]
             )
         case MediaKind.png:
@@ -570,7 +602,7 @@ def _argfile_lines(item: GpsWrite) -> list[str]:
                     "-XMP-dc:Source=gpsify",
                     f"-XMP-photoshop:Instructions={instructions}",
                     "-overwrite_original",
-                    str(item.dest),
+                    dest_arg,
                 ]
             )
         case MediaKind.raw:
@@ -581,7 +613,7 @@ def _argfile_lines(item: GpsWrite) -> list[str]:
                     "-XMP-dc:Source=gpsify",
                     f"-XMP-photoshop:Instructions={instructions}",
                     "-overwrite_original",
-                    str(item.dest),
+                    dest_arg,
                 ]
             )
         case MediaKind.unsupported:

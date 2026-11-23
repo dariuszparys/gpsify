@@ -147,3 +147,29 @@ def test_ensure_preview_and_thumb_are_lazy(tmp_path: Path) -> None:
         root, photo_id, source, expected_sha256=digest, kind=MediaKind.jpeg
     )
     assert again == preview
+
+
+def test_media_refuses_symlinks_photoslibrary_and_decompression_bombs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    real = write_test_jpeg(tmp_path / "real.jpg")
+    link = tmp_path / "link.jpg"
+    os.symlink(real, link)
+    with pytest.raises(MediaError) as exc:
+        render_preview(link, MediaKind.jpeg, expected_sha256=hash_file(real))
+    assert exc.value.status is PhotoStatus.error
+
+    bundle = tmp_path / "Photos.photoslibrary" / "a.jpg"
+    bundle.parent.mkdir()
+    write_test_jpeg(bundle)
+    with pytest.raises(MediaError) as exc2:
+        render_preview(bundle, MediaKind.jpeg, expected_sha256=hash_file(bundle))
+    assert exc2.value.status is PhotoStatus.error
+
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 10)
+    big = write_test_jpeg(tmp_path / "big.jpg", size=(32, 32))
+    with pytest.raises(MediaError) as exc3:
+        render_preview(big, MediaKind.jpeg, expected_sha256=hash_file(big))
+    assert exc3.value.status is PhotoStatus.skipped_unreadable
