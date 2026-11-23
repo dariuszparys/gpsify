@@ -1,6 +1,6 @@
 [project]
 name = "gpsify"
-version = "0.1.0"
+version = "0.1.1"
 description = "Visual geolocation of untagged photos. Proposes a pin; writes GPS only after a human accepts."
 readme = "README.md"
 license = { file = "LICENSE" }

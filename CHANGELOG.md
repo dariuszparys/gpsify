@@ -52,3 +52,20 @@ Nothing is tagged yet. Everything below is the state of `main`.
   only subdirectories.
 - The test suite is isolated from a developer's local `.env`.
 - CI pins `astral-sh/setup-uv` to an existing version.
+
+### Security
+
+- **Review UI auth & CSRF (`GHSA-53x8-9rpc-x3v8`):** Validate loopback `Host`
+  headers to block DNS rebinding, require a per-launch capability token exchanged
+  for an `HttpOnly; SameSite=strict` session cookie, check `Origin` /
+  `Sec-Fetch-Site` on mutating methods, enforce `Content-Type: application/json`
+  on `POST /api/*`, and set `Cache-Control: no-store` on HTML/API responses.
+- **ExifTool argfile hardening (`GHSA-c445-mm5g-r9x7`):** Reject `\n`, `\r`,
+  `\x00`, and leading/trailing whitespace in destination paths and identifiers,
+  emit `-charset filename=utf8`, and anchor relative paths with `./` in
+  `exiftool -@` argfiles.
+- **Symlinks & path containment (`GHSA-prhh-x276-9wwr`):** Skip symlinked files
+  and directories during `ingest`, align canonical EXIF lookup keys, refuse
+  symlinks and `*.photoslibrary` targets across `media`/`apply`/`undo`, enforce
+  destination containment against `..` traversal in `relpath`, and catch
+  `Image.DecompressionBombError` in `media`.
