@@ -1,0 +1,73 @@
+[workspace]
+members = [".", "src-tauri"]
+resolver = "2"
+
+[package]
+name = "gpsify"
+version = "0.2.0"
+edition = "2021"
+description = "Visual geolocation of untagged photos. Proposes a pin; writes GPS only after a human accepts."
+license = "MIT"
+repository = "https://github.com/dariuszparys/gpsify"
+
+[lib]
+name = "gpsify"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gpsify"
+path = "src/main.rs"
+
+[[bin]]
+name = "bakeoff"
+path = "src/bin/bakeoff.rs"
+
+[features]
+default = []
+heic = ["dep:libheif-rs"]
+
+[dependencies]
+async-trait = "0.1"
+axum = "0.8"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+dirs = "6"
+dotenvy = "0.15"
+fast_image_resize = { version = "5", features = ["image"] }
+hex = "0.4"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+kamadak-exif = "0.6"
+mime_guess = "2"
+open = "5"
+rand = "0.8"
+rayon = "1"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+rust-embed = "8"
+schemars = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+subtle = "2"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "time", "net", "signal", "fs"] }
+toml = "0.8"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace"] }
+unicode-normalization = "0.1"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+walkdir = "2"
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+libheif-rs = { version = "2", optional = true }
+
+[dev-dependencies]
+chromiumoxide = { version = "0.7", default-features = false, features = ["tokio-runtime"] }
+futures = "0.3"
+http-body-util = "0.1"
+tokio-stream = "0.1"
+wiremock = "0.6"

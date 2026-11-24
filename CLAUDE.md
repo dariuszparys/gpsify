@@ -1,39 +1,35 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to coding agents working in this repository.
 
 ## What this is
 
-`gpsify` proposes GPS coordinates for untagged photos from their pixels and writes tags **only after a human accepts**. macOS-first, local-first: a Typer CLI plus a loopback-only Starlette review UI. Python 3.12+.
+`gpsify` proposes GPS coordinates for untagged photos from their pixels and writes tags **only after a human accepts**. macOS-first, local-first: a Cargo workspace containing the core `gpsify` CLI (`clap`, `tokio`, `rusqlite`) plus loopback-only Axum fallback review UI, AND `gpsify-desktop` (`src-tauri/`, Tauri v2 `WKWebView` native macOS app sharing the exact same Rust core and vendored Leaflet assets under `static/`).
 
 [`docs/decisions.md`](docs/decisions.md) is not background reading. It carries the numbered decisions (K1–K18) that the invariants below cite by number, plus the complete SQLite schema. A behavior change that touches a K-decision belongs in that file too.
 
 ## Commands
 
-**`exiftool` must be on `PATH`** (`brew install exiftool`). Ingest refuses
-HEIC/RAW/PNG folders without it; JPEG-only folders can use Pillow/Piexif.
+**`exiftool` must be on `PATH`** (`brew install exiftool` on macOS, `apt install libimage-exiftool-perl` on Debian/Ubuntu). `exiftool` is required for all GPS writes (`apply`), and ingest refuses HEIC/RAW/PNG folders without it. A pure-Rust `kamadak-exif` JPEG read-only fallback runs when `exiftool` is absent for JPEG ingest/doctor tests.
 `gpsify doctor` checks dependencies and configuration without network calls.
 
-**uv is the only supported workflow.** Never `pip install`, `python -m venv`, or a bare `python`/`pytest` — run everything through `uv run`.
-
 ```bash
-uv sync --extra heic                                      # provisions Python 3.12, installs from uv.lock
-uv run gpsify --help
+cargo run -p gpsify-desktop                          # launch native Tauri desktop app
+cargo run -- --help                                  # run CLI from source
+cargo build --workspace --release                    # builds target/release/gpsify, bakeoff, gpsify-desktop
 
-uv run pytest --disable-socket --allow-unix-socket        # CI parity
-uv run pytest --disable-socket --allow-unix-socket tests/test_apply.py::test_name
-uv run pytest -m live                                     # opt-in, hits real APIs
+cargo fmt --check                                    # formatting gate
+cargo clippy --workspace --all-targets -- -D warnings # lint gate (zero warnings)
+cargo test --workspace                               # unit, integration, exiftool, wiremock, Tauri IPC, headless Chrome
 ```
 
-`--allow-unix-socket` is required: asyncio/aiosqlite need it to create an event loop. TCP/UDP stay blocked so nothing reaches xAI or Nominatim. `.github/workflows/ci.yml` is the source of truth and runs `uv sync --locked` then that same pytest line with `GPSIFY_DRY_RUN=1`. CI includes Python tests on Ubuntu/macOS and Chromium integration tests on macOS; no linter or type checker is configured.
+`.github/workflows/ci.yml` is the source of truth and runs `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --locked` (with `GPSIFY_DRY_RUN=1` in the workflow environment; headless Chrome tests run on `macos-latest`), and `cargo build --workspace --release --locked`.
 
-Dependencies: add with `uv add` (`uv add --group dev` for tooling), never by hand-editing `pyproject.toml`, so `uv.lock` stays in step — CI runs `--locked` and fails on drift. Dev tooling lives in `[dependency-groups]`; `heic` (`pillow-heif`) is the only runtime extra, and the Ubuntu CI job syncs without it for fallback coverage; macOS installs it and ExifTool.
+Dependencies are managed in `Cargo.toml` and pinned in `Cargo.lock`. On non-macOS hosts, optional HEIC decode is gated behind `--features heic` (`libheif-rs`); on macOS, native `CoreFoundation` + `ImageIO` frameworks handle oriented HEIC/JPEG/PNG decode and resize with zero third-party native image libraries.
 
-`pythonpath = ["src"]` in `pyproject.toml` means tests import `gpsify` without an install step; `tests/` is on `sys.path` too, so `from jpeg_factory import ...` works.
+Exercise the CLI without touching real data: `GPSIFY_DATA_DIR=/tmp/scratch cargo run -- ingest <folder>`.
 
-Exercise the CLI without touching real data: `GPSIFY_DATA_DIR=/tmp/scratch uv run gpsify ingest <folder>`.
-
-`scripts/bakeoff.py` scores models against an album of already-geotagged photos (their EXIF GPS is the answer key) and prints Acc@km, median error, real token usage, and real USD. It spends money on live API calls, so it is never part of the suite; `tests/test_bakeoff.py` covers its scoring math only.
+`src/bin/bakeoff.rs` scores models against an album of already-geotagged photos (their EXIF GPS is the answer key) and prints Acc@km, median error, real token usage, and real USD. It spends money on live API calls unless `GPSIFY_DRY_RUN=1` is set; its unit tests (`cargo test --bin bakeoff`) cover parsing and scoring math offline.
 
 Exit codes: `0` ok · `1` partial (some photos errored/failed) · `2` config or usage error · `3` `apply` wrote nothing because nothing was accepted.
 
@@ -46,50 +42,49 @@ ingest → propose → review (or decide) → apply → undo
 ```
 
 **Every `<job_id>` argument is a job handle: a UUID, a folder path, or `last`**
-(`store.index.resolve_job_handle`). A folder resolves against the global index by the
+(`store::index::resolve_job_handle`). A folder resolves against the global index by the
 canonical path `ingest` registered; one folder ingested both flat and `--recursive`
 holds two jobs, and the resolver takes the most recent *and prints which it picked*.
-A UUID whose `job.sqlite` is on disk resolves with no index row. `ingest --relocate`
+A UUID whose `job.sqlite` is on disk stays addressable with no index row. `ingest --relocate`
 is the one exception and still takes a literal UUID.
 
-`ingest` walks and classifies a folder, hashes every file, reads EXIF in batched `exiftool` calls, and builds time+folder clusters. `propose` sends a lazily built 1280px preview to the selected vision provider (`--provider xai|gemini`), geocodes the returned *place name*, reconciles the two coordinate sources, and writes a `proposal` row. `review`/`decide` write a `decision` row. `apply` writes GPS from that decision. `undo` reverses it from a full-file backup. `geocode` (`run_geocode`, also in `propose.py`) re-runs only the geocode half for proposals left at `pin_source=none`, reading the stored `VisionGuess` back out of `proposal.raw_json` so no vision call is repeated.
+`ingest` walks and classifies a folder (`walkdir`, parallel `rayon` SHA-256), reads EXIF in batched `exiftool` calls (with `kamadak-exif` JPEG fallback), and builds time+folder clusters (`cluster.rs`). `propose` sends a lazily built 1280px preview to the selected vision provider (`--provider xai|gemini`), geocodes the returned *place name*, reconciles the two coordinate sources, and writes a `proposal` row. `review`/`decide` write a `decision` row. `apply` writes GPS from that decision via batched `exiftool`. `undo` reverses it from a full-file backup (or restores/removes RAW `.xmp` sidecars). `geocode` (`propose::run_geocode`) re-runs only the geocode half for proposals left at `pin_source=none`, reading the stored `VisionGuess` back out of `proposal.raw_json` so no vision call is repeated.
 
-Modules map one-to-one onto those stages (`ingest.py`, `propose.py`, `apply.py`, `undo.py`, `status.py`), with `media.py` (decode/transpose/resize), `exif.py` (all `exiftool` read and write), `cluster.py`, `reconcile.py`, plus the `providers/`, `geocode/`, `store/`, and `review/` packages.
+Modules in `src/`:
+- `types.rs`: shared `serde` + `schemars` wire contracts (`VisionGuess`, `GeoHit`, `PromptContext`, `VisionCallOptions`) and string enums persisted to SQLite.
+- `config.rs`: settings precedence (`env` → `.env` → `~/.gpsify/config.toml` → defaults; `[vision]` TOML flattening; `GPSIFY_DRY_RUN` env-only guard).
+- `store/`: `db.rs` (Schema v1 DDL), `index.rs` (global `gpsify.sqlite`), `repo.rs` (`JobRepo`), `lock.rs` (`propose.lock` PID guard).
+- `exif.rs`, `media.rs`, `media_macos.rs`, `cluster.rs`, `ingest.rs`: ingestion, lazy 1280px/256px oriented JPEG previews & thumbs, clustering.
+- `providers/`: `mod.rs` (`VisionProvider`, `FakeVisionProvider`), `xai.rs`, `gemini.rs`.
+- `geocode/`: `mod.rs` (`GeocodeService`, `FakeGeocoder`, K10 rails), `cache.rs`, `nominatim.rs`.
+- `reconcile.rs`, `propose.rs`: primary-place reconciliation, `ui_rank`, `run_propose`, `run_geocode`.
+- `review/`: `mod.rs`, `security.rs`, `routes.rs`, serving vendored assets from `static/`.
+- `apply.rs`, `undo.rs`, `status.rs`, `main.rs`, `bin/bakeoff.rs`.
 
-Two SQLite databases, both outside the repo under `~/.gpsify` (or `GPSIFY_DATA_DIR`):
-
+Two SQLite databases live outside the repo under `~/.gpsify` (or `GPSIFY_DATA_DIR`):
 - `gpsify.sqlite` — **required** global index mapping resume key → `job_id`. Resume key is `canonical(root)` + `options_hash`, where `options_hash` hashes `{recursive: bool}` **only**; `--hint` is deliberately not part of it.
 - `jobs/<job_id>/job.sqlite` — one job's photos, proposals, decisions, and write receipts, alongside `previews/`, `thumbs/`, `backups/`, `copies/`, `logs/`.
 
 ## Invariants that must not be broken
 
-These are safety rails, each traceable to a K-decision in the design doc. Breaking one is a product bug, not a style change.
+These are safety rails, each traceable to a K-decision in `docs/decisions.md`. Breaking one is a product bug, not a style change.
 
-- **`apply` reads the current `decision` row only** — never `proposal.pin_*` (K12). `repo.add_decision` is the *only* decision mutator; it resolves what the human accepted (copying the proposal pin on a bare `accept`), enforces exactly one `current=1` per photo, and rejects null/non-finite coordinates. A persisted accept always has finite lat/lng, so `apply` never guesses.
-- **A provider-side content block is `refused`, never `error`.** xAI `message.refusal` and Gemini `blockReason`/blocked `finishReason` raise `VisionBlockedError`; `propose` records `refusal=policy_refusal` with no pin. `error` is retry-eligible (`_eligible_statuses`), so classifying a terminal block as `error` re-bills a call that can only fail again.
+- **`apply` reads the current `decision` row only** — never `proposal.pin_*` (K12). `JobRepo::add_decision` is the *only* decision mutator; it resolves what the human accepted (copying the proposal pin on a bare `accept`), enforces exactly one `current=1` per photo, and rejects null/non-finite coordinates.
+- **A provider-side content block is `refused`, never `error`.** xAI `message.refusal` and Gemini `blockReason`/blocked `finishReason` raise `VisionError::Blocked`; `propose` records `refusal=policy_refusal` with no pin.
 - **No auto-write at any confidence.** `ui_rank` sorts and colors the UI; it never gates a write. `skip --all-low` is preview-and-confirm.
-- **Every image call names its reasoning budget explicitly, and no call opts into retention** (K13). `VisionCallOptions` validates on construction and `assert_safe_vision_options` re-checks before the send; both wrappers refuse otherwise. On xAI that is `store=False`/`store_messages=False` plus `reasoning_effort` — omitting the knob silently bills `high` on `grok-4.6`. On Gemini it is `thinkingConfig.thinkingBudget`, mapped from the same `low`/`medium`/`high`; an omitted budget lets the model pick and bill its own. `xhigh` is rejected. `tests/test_xai_flags.py` and `tests/test_provider_plugin.py` assert this against the real wrappers, not the fake.
-- **Gemini has no per-request `store=False`.** Retention follows the key's tier and the API does not report it, so `propose` cannot verify it and warns on every `--provider gemini` run instead. Do not present a Gemini run as non-retaining; the README tells the user to enable billing on the key.
-- **A provider reads only its own key** (`XAI_API_KEY` / `GEMINI_API_KEY`) and its own model setting (`GPSIFY_MODEL` / `GPSIFY_GEMINI_MODEL`). Never fall back to the other provider's credentials, and keep `estimate_usd` keyed by model — the running USD line is wrong by ~3× if a Gemini run prices at Grok rates.
-- **RAW bytes are never rewritten** (K17). RAW goes out as an extracted embedded preview and comes back as a sibling `.xmp` sidecar; the receipt's `dest_path` *is* the sidecar. Never back up a RAW — back up the previous sidecar or nothing.
-- **`photo.sha256` is always the ingest (pre-tag) hash.** Post-write identity lives on `write_receipt.written_sha256`. Dest inspection therefore runs *before* any ingest-hash abort, or `--in-place` retries would wrongly report `source_changed`.
+- **Every image call names its reasoning budget explicitly, and no call opts into retention** (K13). `VisionCallOptions` validates on construction and `assert_safe_vision_options` re-checks before sending; both wrappers refuse otherwise. On xAI: `store=false`, `store_messages=false`, and explicit `reasoning_effort`. On Gemini: explicit `thinkingConfig.thinkingBudget` mapped from `low`/`medium`/`high`. `xhigh` is rejected. `tests/providers.rs` enforces this against the real wrappers.
+- **Gemini has no per-request `store=False`.** Retention follows the key's tier and the API does not report it, so `propose` warns on every Gemini run.
+- **A provider reads only its own key** (`XAI_API_KEY` / `GEMINI_API_KEY`) and its own model setting (`GPSIFY_MODEL` / `GPSIFY_GEMINI_MODEL`), and `estimate_usd` prices by model.
+- **RAW bytes are never rewritten** (K17). RAW goes out as an extracted embedded preview and comes back as a sibling `.xmp` sidecar; the receipt's `dest_path` *is* the sidecar. Never back up a RAW container — back up the previous sidecar or nothing.
+- **`photo.sha256` is always the ingest (pre-tag) hash.** Post-write identity lives on `write_receipt.written_sha256`. Dest inspection runs *before* any ingest-hash abort so `--in-place` retries don't wrongly report `source_changed`.
 - **Schema v1 is complete and frozen** (`PRAGMA user_version=1`). Do not add columns; additive migrations only after v1. Never rewrite a proposal's `raw_json` — append a row and flip `current`.
-- **Ingest never writes `previews/` or `thumbs/`.** They are built just-in-time by `propose` and the review UI so `--limit 10` does not materialize 2,000 JPEGs.
-- **The review UI binds `127.0.0.1` only.** There is no LAN flag. Thumbs are served by `photo_id` UUID; originals are never mounted. It is vanilla HTML/CSS/JS with no build step, and Leaflet is vendored under `static/vendor/` — `index.html` must not reference a remote host (`test_static_assets_are_local_only`).
-- **Copying one pin onto many photos is capped; accepting many photos is not** (K9, K18). `POST /api/pin/apply` (arbitrary selection) and `POST /api/clusters/{id}/apply` both go through `_apply_source_pin`: `proposed`-only candidates, an extra id is a 400 and never a silent drop, and `batch_needs_confirm` demands a typed count at >30, all-undated, or >25% untimestamped. Bulk **accept** is uncapped on purpose — each photo keeps its own proposal pin, so nothing is copied between photos. Both write `DecisionAction.cluster_apply`; do not add an enum member, schema v1 is frozen.
-- **No `input` listener in `review/static/*.js`, and no `.oninput`.** `test_static_search_is_enter_only` scans every first-party module (not `vendor/`) and requires the literal `event.key !== "Enter"` in `app.js`. That is the K10 typeahead ban; the grid-size slider uses `change` for this reason.
-- **Geocoding respects the OSMF policy** (K10): primary place name only, submit-on-Enter (no typeahead), ≤1 rps, identifiable User-Agent, cached by normalized key, and a 50-uncached-per-run cap. Never geocode a `privacy_sensitive`/`policy_refusal` result or a house-address-shaped string. `geocoder_url` must stay switchable via config.
-- **Refuse `*.photoslibrary` roots** (K14) and never mutate a Photos.app bundle.
-- **`--dry-run` means no spend and no mutation.** For `propose`, no xAI or public-geocoder HTTP (cache reads are fine); for `apply`, print the would-be argfile and write nothing.
-
-## Conventions
-
-- Every module starts with `from __future__ import annotations` and a docstring naming its role and normative rules.
-- Each stage exposes one `async def run_*(...)` entrypoint returning a summary dataclass, plus a module-local `*Error` exception. `cli.py` is a thin shell: `asyncio.run(run_x(...))`, catch `(XError, StoreError)`, `typer.echo(f"error: {exc}", err=True)`, `raise typer.Exit(code=2)`. Long-running commands take a `progress=lambda message: typer.echo(message)` callback rather than printing themselves.
-- Exhaustive `match` over enums ends with `case _: _unreachable(value)` where `_unreachable(value: Never) -> Never`. Keep that arm when adding enum members so type checking catches the gap.
-- `gpsify.types` holds the shared Pydantic wire contracts (`VisionGuess`, `GeoHit`, `PromptContext`, `VisionCallOptions`) and the string enums persisted to SQLite. The store persists those values and does not redefine them.
-- Settings precedence is environment → `.env` → `~/.gpsify/config.toml` → defaults, wired through `settings_customise_sources`. `[vision]` TOML keys are flattened onto flat field names.
-- `GPSIFY_DRY_RUN=1` blocks live HTTP (xAI, geocoder) and `exiftool` writes. `tests/conftest.py` sets it for the whole suite; only `@pytest.mark.writes_exif` lifts it, and `@pytest.mark.live` marks tests that need real APIs.
-- Tests build fixtures with `tests/jpeg_factory.py` (never write GPS onto checked-in fixtures), drive the pipeline through `FakeVisionProvider` / `FakeGeocoder`, and exercise apply via `repo.add_decision` + `run_apply` rather than HTTP.
-- Never log base64, image bytes, or full home paths. Log `photo_id`, status, place name, `ui_rank`.
-- Commits are conventional-commit style, one self-contained change per commit (`feat: xAI grok-4.6 vision proposals`).
+- **Ingest never writes `previews/` or `thumbs/`.** They are built just-in-time by `propose` and the review UI.
+- **Desktop app & review transport boundary** (K16). `gpsify-desktop` uses Tauri IPC (`src-tauri/src/commands.rs` delegating directly to shared helpers in `src/review/routes.rs`) and serves thumbnails/previews strictly by active `job_id` + `photo_id` UUID over `gpsify://` with no open TCP listener. The CLI `review` command binds `127.0.0.1` only. Assets under `static/` work identically in both modes (`./vendor/` relative paths, vendored Leaflet, zero remote CDN references per `static_assets_are_local_only`).
+- **Copying one pin onto many photos is capped; accepting many photos is not** (K9, K18). `POST /api/pin/apply` and `POST /api/clusters/{id}/apply` share server-side candidate & batch-confirmation checks (`>30`, all undated, or `>25%` untimestamped). Both write `DecisionAction::ClusterApply` (`cluster_apply`).
+- **No `input` listener in `static/*.js`, and no `.oninput`.** `static_search_is_enter_only` scans every first-party JS module and requires Enter-only search (`event.key !== "Enter"` in `static/app.js`, K10).
+- **Geocoding respects the OSMF policy** (K10): primary place name only, submit-on-Enter, ≤1 rps, identifiable User-Agent, normalized SQLite cache, and a 50-uncached-per-run cap on public Nominatim. Never geocode a `privacy_sensitive`/`policy_refusal` result or a house-address-shaped string.
+- **Refuse `*.photoslibrary` roots** (K14).
+- **`--dry-run` / `GPSIFY_DRY_RUN=1` means no spend and no mutation.** Live HTTP wrappers and `exiftool` write calls honor `GPSIFY_DRY_RUN=1` (explicitly overridden only in local `wiremock` / `exif` write tests).
+- **Never log base64, image bytes, or full home paths.** Log `photo_id`, status, place name, `ui_rank`.
+- **Browser E2E tests** live in `tests/browser.rs` using `chromiumoxide` headless Chrome driving the embedded Axum review server on loopback.
+- **Commits** follow conventional-commit style, one self-contained change per commit.

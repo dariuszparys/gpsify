@@ -7,7 +7,32 @@ a release.
 
 ## [Unreleased]
 
-Nothing is tagged yet. Everything below is the state of `main`.
+## [0.2.0] - 2026-11-24
+
+### Changed
+
+- **Rust port (`gpsify` CLI + `bakeoff` binary):** Replaced the Python 3.12
+  implementation with a Cargo workspace (`clap`, `tokio`, `rusqlite` bundled,
+  `axum`, `reqwest`, `rayon`, `fast_image_resize`), preserving byte-for-byte
+  SQLite Schema v1 (`PRAGMA user_version=1`) compatibility with existing
+  `~/.gpsify` databases.
+- **Native macOS ImageIO media pipeline:** Uses `CoreFoundation` + `ImageIO` on
+  macOS for oriented HEIC/JPEG/PNG decode and resize with zero third-party
+  native image libraries (`libheif-rs` remains optional via `--features heic` on
+  non-macOS hosts).
+- **CI workflow:** Updated GitHub Actions to run `cargo fmt --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace --locked`, and `cargo build --workspace --release --locked`
+  on `ubuntu-latest` and `macos-latest`.
+
+### Added
+
+- **Tauri v2 desktop app (`gpsify-desktop` under `src-tauri/`):** Native macOS
+  `WKWebView` app sharing the Rust core and vendored Leaflet UI under `static/`,
+  using Tauri IPC and a scoped `gpsify://` media protocol with no open TCP
+  listener (K16).
+
+## [0.1.1]
 
 ### Added
 

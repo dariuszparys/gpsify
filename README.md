@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/dariuszparys/gpsify/actions/workflows/ci.yml/badge.svg)](https://github.com/dariuszparys/gpsify/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
+[![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org/)
 
 Visual geolocation of untagged photos. gpsify proposes a location from pixels, shows its work, and writes GPS **only after a human accepts**.
 
-This repository is a macOS-first, local-first CLI plus a localhost review UI. The safety rails it will not cross — and the frozen SQLite schema behind them — are in [`docs/decisions.md`](docs/decisions.md).
+This repository is a macOS-first, local-first Cargo workspace offering both a native **Tauri v2 desktop app** (`gpsify-desktop`) and a CLI (`gpsify`), sharing one Rust core and frozen SQLite Schema v1 (`~/.gpsify`). The safety rails it will not cross are in [`docs/decisions.md`](docs/decisions.md).
 
 ![The gpsify review grid](docs/images/review-grid.png)
 
@@ -56,34 +56,28 @@ checkpointed immediately after each successful vision response, before geocoding
 
 ## Requirements
 
-- Python 3.12+
-- [`exiftool`](https://exiftool.org) on `PATH` — `brew install exiftool`. Treat this as required, not optional; see below.
+- Rust toolchain (`rustc` / `cargo` stable) to build from source
+- [`exiftool`](https://exiftool.org) on `PATH` — `brew install exiftool` (macOS) or `apt install libimage-exiftool-perl` (Debian/Ubuntu). Treat this as required, not optional; see below.
 
 ### Why `exiftool` is effectively required
 
-JPEG-only folders work with the Pillow/Piexif fallback. Ingest refuses folders
-containing HEIC, RAW, or PNG when ExifTool is unavailable: unreadable metadata
-must never be treated as proof that a photo has no GPS. Install ExifTool and
-re-run ingest before proposing those formats.
+`exiftool` handles all GPS metadata writes (`apply`) across JPEG, HEIC, PNG, and RAW `.xmp` sidecars. A pure-Rust `kamadak-exif` fallback handles JPEG reads when `exiftool` is absent, while ingest refuses folders containing HEIC, RAW, or PNG without ExifTool: unreadable metadata must never be treated as proof that a photo has no GPS.
 
-Run `uv run gpsify doctor` to check ExifTool, HEIC preview support, the selected
-provider's API key, and geocoder configuration. It makes no network calls and
-never prints credentials. Exit code 1 means a capability or configuration is missing.
+Run `gpsify doctor` to check ExifTool, HEIC preview support, the selected provider's API key, and geocoder configuration. It makes no network calls and never prints credentials. Exit code 1 means a capability or configuration is missing.
 
-## Install
+## Install & Launch
 
 ```bash
 brew install exiftool
+cargo build --workspace --release
 ```
 
-[uv](https://docs.astral.sh/uv/) is the only supported workflow for the Python side. It provisions the Python pinned in `.python-version` and installs the exact versions in `uv.lock`.
+That produces both binaries under `target/release/`:
 
-```bash
-uv sync --extra heic
-uv run gpsify --help
-```
+- **Native macOS desktop app (Tauri v2):** `./target/release/gpsify-desktop` (or `cargo run --release -p gpsify-desktop`) — full GUI for picking folders, scanning/clustering, running `propose` / `geocode`, reviewing thumbnails & map pins, and running `apply` / `undo` with no browser tab or open HTTP port.
+- **CLI:** `./target/release/gpsify --help` (or `cargo install --path .` to add `gpsify` and `bakeoff` to `PATH`).
 
-`heic` (`pillow-heif`) is the one optional runtime extra and covers HEIC **decode** for previews and vision. Omit `--extra heic` to match CI: JPEG/PNG/RAW still work and HEIC preview is `skipped_unsupported`.
+On macOS (`darwin`), HEIC, JPEG, and PNG preview decode/resize uses Apple's native `CoreFoundation` + `ImageIO` frameworks with no extra native image dependencies. On Linux, build with `--features heic` (requires `libheif`) for HEIC decode, and ensure `libwebkit2gtk-4.1-dev` / `libgtk-3-dev` are present for the desktop crate.
 
 ## Quickstart
 
@@ -94,16 +88,16 @@ export XAI_API_KEY=...
 export NOMINATIM_CONTACT=you@example.com    # required by OSMF policy, see below
 
 # See what it would do and what it would cost — spends nothing:
-GPSIFY_DRY_RUN=1 uv run gpsify run ~/Pictures/my-album
+GPSIFY_DRY_RUN=1 gpsify run ~/Pictures/my-album
 
 # For real, capped at 20 photos:
-uv run gpsify run ~/Pictures/my-album --hint "weekend in Porto, 2019" --limit 20
+gpsify run ~/Pictures/my-album --hint "weekend in Porto, 2019" --limit 20
 ```
 
 `run` chains `ingest → propose → review` and opens the review grid in your browser. Nothing is written to a photo until you review the proposals and then run `apply`:
 
 ```bash
-uv run gpsify apply ~/Pictures/my-album      # writes copies, originals untouched
+gpsify apply ~/Pictures/my-album      # writes copies, originals untouched
 ```
 
 ## Configuration
@@ -164,7 +158,7 @@ provider never falls back to the other's credentials.
 
 ```bash
 export GEMINI_API_KEY=...
-uv run gpsify propose <job_id> --provider gemini
+gpsify propose <job_id> --provider gemini
 ```
 
 `gemini-2.5-flash` is the default because
@@ -177,11 +171,11 @@ those same boards, at roughly Grok-like spend.
 ### Which model — measure, don't read
 
 The research note ranks `gemini-2.5-flash` on *other people's* photos. To settle
-it on yours, `scripts/bakeoff.py` scores any set of models against photos whose
-GPS you already have — the album's own EXIF is the answer key:
+it on yours, the `bakeoff` binary (`src/bin/bakeoff.rs`) scores any set of models
+against photos whose GPS you already have — the album's own EXIF is the answer key:
 
 ```bash
-uv run python scripts/bakeoff.py ~/Pictures/my-album \
+cargo run --release --bin bakeoff -- ~/Pictures/my-album \
     --model xai:grok-4.6 \
     --model gemini:gemini-2.5-flash \
     --model gemini:gemini-2.5-pro \
@@ -227,9 +221,9 @@ gpsify clean <job>
 The staged commands still work, and `ingest` still prints the `job_id`:
 
 ```bash
-uv run gpsify ingest ~/Pictures/my-album --hint "weekend in Porto, 2019"
-uv run gpsify propose ~/Pictures/my-album
-uv run gpsify review ~/Pictures/my-album
+gpsify ingest ~/Pictures/my-album --hint "weekend in Porto, 2019"
+gpsify propose ~/Pictures/my-album
+gpsify review ~/Pictures/my-album
 ```
 
 ### Job handles
@@ -296,8 +290,8 @@ finishes just that half against the current `geocoder_url`, re-using the guesses
 already stored. It never calls a vision provider, so it costs nothing:
 
 ```bash
-uv run gpsify geocode <job> --dry-run          # how many uncached lookups are left?
-uv run gpsify geocode <job_id> --geocode-uncached-max 200
+gpsify geocode <job> --dry-run          # how many uncached lookups are left?
+gpsify geocode <job_id> --geocode-uncached-max 200
 ```
 
 `geocoder_url` must point at a **Nominatim-shaped** endpoint. `NominatimGeocoder`
@@ -310,34 +304,29 @@ instance; a self-hosted Nominatim switches the cap off entirely.
 ## Limitations
 
 - **A wrong pin is possible and expected.** Vision geolocation is a guess. gpsify is built around that: it shows the model's own coordinate next to the geocoder's, ranks its confidence, and makes you accept. Do not batch-accept without looking.
-- **`exiftool` is required for HEIC, RAW, and PNG metadata.** Ingest refuses those formats when it is missing; JPEG-only fallback remains available.
+- **`exiftool` is required for all GPS writes (`apply`) and HEIC/RAW/PNG metadata reads.** Ingest refuses those formats when it is missing; a read-only `kamadak-exif` JPEG fallback remains available.
 - **RAW is never rewritten.** RAW photos get a sibling `.xmp` sidecar; the pixel data is never touched. Your RAW converter has to read sidecars for the tag to show up.
 - **Photos.app libraries are refused.** gpsify will not open a `*.photoslibrary` bundle. Export first.
 - **The geocoder must be Nominatim-shaped.** A self-hosted Nominatim works; Photon, Mapbox, and Google do not.
 - **Public Nominatim is rate-limited and capped** at 50 uncached lookups per run, by policy. Large albums will need `gpsify geocode` passes or your own instance.
 - **macOS-first.** Linux is best-effort; Windows is not supported.
-- **Not on PyPI.** Install from a clone with `uv`.
+- **Not on crates.io.** Build and install from a clone with `cargo install --path .`.
 
 ## Tests
 
-**GitHub Actions is the source of truth** for CI. The workflow runs `uv sync --locked` then `uv run pytest --disable-socket --allow-unix-socket` with `GPSIFY_DRY_RUN=1`. Unix sockets are allowed so asyncio/aiosqlite can create an event loop; TCP/UDP stay blocked. The Ubuntu job covers dependency fallback paths. The macOS job installs ExifTool
-and HEIC support and also runs Chromium integration tests. No live AI or geocoder
-calls occur; write tests use temporary photos.
+**GitHub Actions is the source of truth** for CI. The workflow runs `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --locked` (with `GPSIFY_DRY_RUN=1`), and `cargo build --workspace --release --locked`. The Ubuntu job tests core + desktop compilation (`libimage-exiftool-perl`, WebKitGTK). The macOS job installs ExifTool and runs the full suite including Apple ImageIO HEIC decode, Tauri backend IPC tests, and headless Chrome E2E tests. No live AI or geocoder calls occur; write and HTTP tests use temporary photos and local `wiremock` servers.
 
 Locally:
 
 ```bash
-uv run pytest --disable-socket --allow-unix-socket -q
+cargo test --workspace
 ```
 
-Browser tests run the real review server on loopback with generated photos:
+Headless Chrome browser E2E tests run the real Axum review server on loopback with generated photos:
 
 ```bash
-uv run playwright install chromium
-uv run pytest browser_tests -q
+cargo test --test browser
 ```
-
-HEIC and live RAW-extract tests skip when `pillow-heif` / `exiftool` are missing.
 
 ## License
 
@@ -345,6 +334,6 @@ HEIC and live RAW-extract tests skip when `pillow-heif` / `exiftool` are missing
 
 ### Third-party
 
-- [Leaflet](https://leafletjs.com) 1.9.4 is vendored under [`src/gpsify/review/static/vendor/`](src/gpsify/review/static/vendor/) so the review UI needs no CDN. BSD-2-Clause, (c) 2010-2023 Volodymyr Agafonkin, (c) 2010-2011 CloudMade — [full license text](src/gpsify/review/static/vendor/LICENSE-leaflet.txt).
+- [Leaflet](https://leafletjs.com) 1.9.4 is vendored under [`static/vendor/`](static/vendor/) and embedded into the binary via `rust-embed` so the review UI needs no CDN. BSD-2-Clause, (c) 2010-2023 Volodymyr Agafonkin, (c) 2010-2011 CloudMade — [full license text](static/vendor/LICENSE-leaflet.txt).
 - Map tiles and geocoding default to [OpenStreetMap](https://www.openstreetmap.org/copyright) — © OpenStreetMap contributors, [ODbL](https://opendatacommons.org/licenses/odbl/). The review UI displays this attribution, and gpsify follows the [OSMF Nominatim usage policy](https://operations.osmfoundation.org/policies/nominatim/): identifiable User-Agent, ≤1 request per second, results cached, no typeahead, and a per-run cap on uncached lookups.
 - [`exiftool`](https://exiftool.org) by Phil Harvey is an external dependency, not bundled.
